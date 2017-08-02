@@ -2611,6 +2611,7 @@ v8_component("v8_libbase") {
 
   if (is_component_build) {
     defines = [ "BUILDING_V8_BASE_SHARED" ]
+    output_extension = "so.6"
   }
 
   if (is_posix) {
@@ -2729,6 +2730,7 @@ v8_component("v8_libplatform") {
 
   if (is_component_build) {
     defines = [ "BUILDING_V8_PLATFORM_SHARED" ]
+    output_extension = "so.6"
   }
 
   public_configs = [ ":libplatform_config" ]
@@ -2912,6 +2914,8 @@ if (is_component_build) {
     sources = [
       "src/v8dll-main.cc",
     ]
+
+    output_extension = "so.6"
 
     public_deps = [
       ":v8_base",
