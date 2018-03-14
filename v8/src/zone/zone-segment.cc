@@ -15,7 +15,7 @@ void Segment::ZapContents() {
 
 void Segment::ZapHeader() {
 #ifdef DEBUG
-  memset(this, kZapDeadByte, sizeof(Segment));
+  memset(static_cast<void*>(this), kZapDeadByte, sizeof(Segment));
 #endif
 }
 

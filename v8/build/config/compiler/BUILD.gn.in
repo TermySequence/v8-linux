@@ -185,7 +185,7 @@ config("compiler") {
   ldflags = []
   defines = []
   configs = []
-  inputs = []
+  # inputs = []
 
   # System-specific flags. If your compiler flags apply to one of the
   # categories here, add it to the associated file to keep this shared config
@@ -1278,6 +1278,9 @@ config("default_warnings") {
       # [1] https://gcc.gnu.org/gcc-6/porting_to.html#this-cannot-be-null
       # [2] https://crbug.com/784492#c13
       cflags += [ "-fno-delete-null-pointer-checks" ]
+
+      # workaround tests
+      cflags += [ "-Wno-error=subobject-linkage" ]
     }
   }
 
