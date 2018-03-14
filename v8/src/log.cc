@@ -531,7 +531,7 @@ void JitLogger::LogRecordedBuffer(AbstractCode* code,
                                   SharedFunctionInfo* shared, const char* name,
                                   int length) {
   JitCodeEvent event;
-  memset(&event, 0, sizeof(event));
+  memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_ADDED;
   event.code_start = code->instruction_start();
   event.code_len = code->instruction_size();
@@ -548,7 +548,7 @@ void JitLogger::LogRecordedBuffer(AbstractCode* code,
 void JitLogger::LogRecordedBuffer(const InstructionStream* stream,
                                   const char* name, int length) {
   JitCodeEvent event;
-  memset(&event, 0, sizeof(event));
+  memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_ADDED;
   event.code_start = stream->bytes();
   event.code_len = stream->byte_length();
@@ -562,7 +562,7 @@ void JitLogger::LogRecordedBuffer(const InstructionStream* stream,
 void JitLogger::LogRecordedBuffer(wasm::WasmCode* code, const char* name,
                                   int length) {
   JitCodeEvent event;
-  memset(&event, 0, sizeof(event));
+  memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_ADDED;
   event.code_start = code->instructions().start();
   event.code_len = code->instructions().length();
@@ -594,7 +594,7 @@ void JitLogger::AddCodeLinePosInfoEvent(
     int position,
     JitCodeEvent::PositionType position_type) {
   JitCodeEvent event;
-  memset(&event, 0, sizeof(event));
+  memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_ADD_LINE_POS_INFO;
   event.user_data = jit_handler_data;
   event.line_info.offset = pc_offset;
@@ -607,7 +607,7 @@ void JitLogger::AddCodeLinePosInfoEvent(
 
 void* JitLogger::StartCodePosInfoEvent() {
   JitCodeEvent event;
-  memset(&event, 0, sizeof(event));
+  memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_START_LINE_INFO_RECORDING;
 
   code_event_handler_(&event);
@@ -617,7 +617,7 @@ void* JitLogger::StartCodePosInfoEvent() {
 void JitLogger::EndCodePosInfoEvent(Address start_address,
                                     void* jit_handler_data) {
   JitCodeEvent event;
-  memset(&event, 0, sizeof(event));
+  memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_END_LINE_INFO_RECORDING;
   event.code_start = start_address;
   event.user_data = jit_handler_data;

@@ -25,7 +25,7 @@ char* RelativePath(char** buffer, const char* exec_path, const char* name) {
         reinterpret_cast<char*>(calloc(path_separator + name_length + 2, 1));
     *buffer[0] = '\0';
     strncat(*buffer, exec_path, path_separator + 1);
-    strncat(*buffer, name, name_length);
+    strncat(*buffer, name, name_length + 1);
   } else {
     *buffer = strdup(name);
   }

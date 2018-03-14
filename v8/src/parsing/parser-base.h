@@ -2163,7 +2163,8 @@ template <class Impl>
 typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParsePropertyName(
     IdentifierT* name, PropertyKind* kind, bool* is_generator, bool* is_get,
     bool* is_set, bool* is_async, bool* is_computed_name, bool* ok) {
-  DCHECK_EQ(*kind, PropertyKind::kNotSet);
+  PropertyKind kindns = PropertyKind::kNotSet;
+  DCHECK_EQ(*kind, kindns);
   DCHECK(!*is_generator);
   DCHECK(!*is_get);
   DCHECK(!*is_set);
