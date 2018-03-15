@@ -314,6 +314,11 @@ def write_gn_ninja(path, root_gen_dir, options):
   cflags = os.environ.get('CFLAGS', '').split()
   cflags_cc = os.environ.get('CXXFLAGS', '').split()
   ldflags = os.environ.get('LDFLAGS', '').split()
+
+  # Work around GCC8 bug gcc#84286
+  cflags.extend(['-fabi-version=11'])
+  cflags_cc.extend(['-fabi-version=11'])
+
   include_dirs = [root_gen_dir, SRC_ROOT]
   libs = []
 
