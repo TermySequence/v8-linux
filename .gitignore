@@ -1,2 +1,11 @@
 scratch/
+*.tar.*
+
+*~
+.#*
+*.bak
+*.orig
+*.rej
+*.swp
+.directory
 .pc
