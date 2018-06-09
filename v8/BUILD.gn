@@ -2756,7 +2756,6 @@ if (v8_monolithic) {
       ":v8_libplatform",
       ":v8_libsampler",
       "//build/config:exe_and_shlib_deps",
-      "//build/win:default_exe_manifest",
     ]
 
     configs = [ ":internal_config" ]
@@ -2784,7 +2783,6 @@ if (v8_use_snapshot && current_toolchain == v8_snapshot_toolchain) {
       ":v8_libplatform",
       ":v8_nosnapshot",
       "//build/config:exe_and_shlib_deps",
-      "//build/win:default_exe_manifest",
     ]
   }
 }
@@ -2873,7 +2871,6 @@ v8_executable("d8") {
     ":v8_libbase",
     ":v8_libplatform",
     "//build/config:exe_and_shlib_deps",
-    "//build/win:default_exe_manifest",
   ]
 
   if (is_posix) {
@@ -2918,7 +2915,6 @@ v8_executable("v8_hello_world") {
     ":v8_libbase",
     ":v8_libplatform",
     "//build/config:exe_and_shlib_deps",
-    "//build/win:default_exe_manifest",
   ]
 }
 
@@ -2939,7 +2935,6 @@ v8_executable("v8_sample_process") {
     ":v8_libbase",
     ":v8_libplatform",
     "//build/config:exe_and_shlib_deps",
-    "//build/win:default_exe_manifest",
   ]
 }
 
@@ -2959,7 +2954,6 @@ v8_executable("v8_parser_shell") {
     ":v8_libbase",
     ":v8_libplatform",
     "//build/config:exe_and_shlib_deps",
-    "//build/win:default_exe_manifest",
   ]
 }
 
@@ -2981,7 +2975,6 @@ if (want_v8_shell) {
       ":v8_libbase",
       ":v8_libplatform",
       "//build/config:exe_and_shlib_deps",
-      "//build/win:default_exe_manifest",
     ]
   }
 }
