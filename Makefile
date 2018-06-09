@@ -6,12 +6,14 @@ LDFLAGS ?= -g -O2
 PREFIX ?= /usr/local
 LIBDIR ?= $(DESTDIR)$(PREFIX)/lib64
 INCDIR ?= $(DESTDIR)$(PREFIX)/include
-BINDIR ?= $(DESTDIR)$(PREFIX)/bin
+
+NINJA ?= /usr/bin/ninja
+ARMABI ?= hard
 
 .PHONY: all install
 
 all:
-	./build.sh $(V8ARCH) "$(CFLAGS)" "$(LDFLAGS)"
+	./build.sh $(V8ARCH) "$(CFLAGS)" "$(LDFLAGS)" $(NINJA) $(ARMABI)
 
 install:
-	./install.sh $(V8ARCH) $(LIBDIR) $(INCDIR) $(BINDIR)
+	./install.sh $(V8ARCH) $(LIBDIR) $(INCDIR)

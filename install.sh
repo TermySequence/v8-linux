@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Arguments: buildarch libdir incdir bindir
+# Arguments: buildarch libdir incdir
 
 set -ex
+cd v8
 
 v8arch=$1
 libdir=$2
 incdir=$3
-bindir=$4
 
 somajor=6
 
@@ -15,15 +15,11 @@ pushd out.gn/$v8arch.release
 # library first
 mkdir -p $libdir
 cp -a libv8*.so.$somajor $libdir
-# Next, binaries
-mkdir -p $bindir
-install -p -m0755 d8 $bindir
-install -p -m0755 mksnapshot $bindir
 popd
 
 # Now, headers
 mkdir -p $incdir
-install -p include/*.h $incdir
+install -pm 644 include/*.h $incdir
 cp -a include/libplatform $incdir
 
 # Make shared library links
