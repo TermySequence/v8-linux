@@ -1324,7 +1324,7 @@ config("default_warnings") {
       # recognize.
       cflags += [
         # TODO(thakis): https://crbug.com/604888
-        "-Wno-undefined-var-template",
+        "",
 
         # TODO(thakis): https://crbug.com/617318
         "-Wno-nonportable-include-path",
@@ -1347,7 +1347,7 @@ config("default_warnings") {
     } else if (use_xcode_clang) {
       cflags += [
         # TODO(thakis): https://crbug.com/604888
-        "-Wno-undefined-var-template",
+        "",
 
         # TODO(hans): https://crbug.com/637306
         "-Wno-address-of-packed-member",
