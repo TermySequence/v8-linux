@@ -1326,7 +1326,7 @@ class NinjaWriter(object):
       self.target.binary = self.ComputeOutput(spec)
       if (self.flavor not in ('mac', 'openbsd', 'netbsd', 'win') and not
           self.is_standalone_static_library):
-        self.ninja.build(self.target.binary, 'alink_thin', link_deps,
+        self.ninja.build(self.target.binary, 'alink', link_deps,
                          order_only=compile_deps)
       else:
         variables = []
@@ -2112,7 +2112,7 @@ def GenerateOutputForConfig(target_list, target_dicts, data, params,
       description='AR $out',
       command='rm -f $out && $ar rcs $arflags $out $in')
     master_ninja.rule(
-      'alink_thin',
+      'alink',
       description='AR $out',
       command='rm -f $out && $ar rcsT $arflags $out $in')
 
