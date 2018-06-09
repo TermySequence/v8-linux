@@ -3901,6 +3901,8 @@ class RememberedSetUpdatingItem : public UpdatingItem {
     }
   }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
   void UpdateTypedPointers() {
     Isolate* isolate = heap_->isolate();
     if (chunk_->typed_slot_set<OLD_TO_NEW, AccessMode::NON_ATOMIC>() !=
@@ -3931,6 +3933,7 @@ class RememberedSetUpdatingItem : public UpdatingItem {
           });
     }
   }
+#pragma GCC diagnostic pop
 
   Heap* heap_;
   MarkingState* marking_state_;
