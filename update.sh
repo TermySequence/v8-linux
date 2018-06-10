@@ -125,6 +125,8 @@ rm -rf tools/profviz
 rm -rf tools/swarming_client
 rm -rf tools/gyp/test
 
+rm -rf benchmarks
+
 popd
 
 git add v8
