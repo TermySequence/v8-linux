@@ -18,9 +18,9 @@ cp -a libv8*.so.$somajor $libdir
 popd
 
 # Now, headers
-mkdir -p $incdir
+mkdir -p $incdir/libplatform
 install -pm 644 include/*.h $incdir
-cp -a include/libplatform $incdir
+install -pm 644 include/libplatform/*.h $incdir/libplatform
 
 # Make shared library links
 pushd $libdir
