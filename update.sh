@@ -59,14 +59,19 @@ if [ "$1" = "--fetch" ]; then
     else
         git clone https://chromium.googlesource.com/chromium/src/tools/gn
     fi
-    mkdir -p v8/tools/gn
-    (cd gn; git archive "$gn_vers") | tar xf - -C v8/tools/gn
+    mkdir -p v8/gn
+    (cd gn; git archive "$gn_vers") | tar xf - -C v8/gn
 
     popd
 fi
 
 rm -rf v8
 cp -r scratch/v8 .
+
+# Moves
+pushd v8/build/config/compiler
+mv BUILD.gn BUILD.gn.in
+popd
 
 # Exclusions
 pushd v8

@@ -8,10 +8,13 @@ MULTILIB ?= lib
 LIBDIR ?= $(DESTDIR)$(PREFIX)/$(MULTILIB)
 INCDIR ?= $(DESTDIR)$(PREFIX)/include
 
-.PHONY: all install
+.PHONY: all install clean
 
 all:
 	./build.sh $(V8ARCH) "$(CFLAGS)" "$(LDFLAGS)" $(ARMFP)
 
 install:
 	./install.sh $(V8ARCH) $(LIBDIR) $(INCDIR)
+
+clean:
+	./clean.sh

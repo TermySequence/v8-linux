@@ -1,6 +1,13 @@
 scratch/
 *.tar.*
 
+v8/out/
+v8/out.gn/
+v8/buildtools/linux64/
+v8/build/config/compiler/BUILD.gn
+v8/tools/gn/
+*.pyc
+
 *~
 .#*
 *.bak
