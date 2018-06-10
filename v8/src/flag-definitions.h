@@ -523,7 +523,7 @@ DEFINE_DEBUG_BOOL(wasm_trace_native_heap, false,
                   "trace wasm native heap events")
 DEFINE_BOOL(wasm_jit_to_native, true,
             "JIT wasm code to native (not JS GC) memory")
-DEFINE_BOOL(wasm_write_protect_code_memory, false,
+DEFINE_BOOL(wasm_write_protect_code_memory, true,
             "write protect code memory on the wasm native heap")
 DEFINE_IMPLICATION(future, wasm_jit_to_native)
 DEFINE_BOOL(wasm_trace_serialization, false,
@@ -1067,6 +1067,8 @@ DEFINE_STRING(testing_string_flag, "Hello, world!", "string-flag")
 DEFINE_INT(testing_prng_seed, 42, "Seed used for threading test randomness")
 
 // mksnapshot.cc
+DEFINE_STRING(embedded_src, nullptr,
+              "Path for the generated embedded data file. (mksnapshot only)")
 DEFINE_STRING(startup_src, nullptr,
               "Write V8 startup as C++ src. (mksnapshot only)")
 DEFINE_STRING(startup_blob, nullptr,
