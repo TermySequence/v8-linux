@@ -76,6 +76,8 @@ find . -type f -name .gitignore -delete
 find . -type d -name .git -print -prune | xargs rm -rf
 # Remove *all* binary files
 find . -type f -size +0c -print0 | perl -n0 -e 'chomp($a = $_); print if -B $a' | xargs -0 rm
+# Remove checksums
+find . -type f -name \*.sha1 -delete
 
 rm -rf depot_tools/man
 rm -f depot_tools/ninja*
