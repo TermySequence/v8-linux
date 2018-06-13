@@ -2691,7 +2691,10 @@ void Worker::ExecuteInThread() {
               if (Shell::DeserializeValue(isolate, std::move(data))
                       .ToLocal(&value)) {
                 Local<Value> argv[] = {value};
-                (void)onmessage_fun->Call(context, global, 1, argv);
+                MaybeLocal<Value> result = onmessage_fun->Call(context, global, 1, argv);
+		if (result.IsEmpty()) {
+			Shell::ReportException(isolate, &try_catch);
+		}
               }
               if (try_catch.HasCaught()) {
                 Shell::ReportException(isolate, &try_catch);
