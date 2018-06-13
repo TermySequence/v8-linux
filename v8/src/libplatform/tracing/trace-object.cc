@@ -25,7 +25,7 @@ V8_INLINE static void CopyTraceObjectParameter(char** buffer,
                                                const char** member) {
   if (*member) {
     size_t length = strlen(*member) + 1;
-    strncpy(*buffer, *member, length);
+    memcpy(*buffer, *member, length);
     *member = *buffer;
     *buffer += length;
   }

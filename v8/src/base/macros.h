@@ -101,7 +101,7 @@ V8_INLINE Dest bit_cast(Source const& source) {
   static_assert(sizeof(Dest) == sizeof(Source),
                 "source and dest must be same size");
   Dest dest;
-  memcpy(&dest, &source, sizeof(dest));
+  memcpy(static_cast<void*>(&dest), &source, sizeof(dest));
   return dest;
 }
 
@@ -404,10 +404,10 @@ bool is_inbounds(float_t v) {
       static_cast<float_t>(std::numeric_limits<int_t>::min()) - 1;
   constexpr float_t kUpperBound =
       static_cast<float_t>(std::numeric_limits<int_t>::max()) + 1;
-  constexpr bool kLowerBoundIsMin =
+  constexpr bool kLowerBoundIsMin __attribute__((unused)) =
       static_cast<biggest_int_t>(kLowerBound) ==
       static_cast<biggest_int_t>(std::numeric_limits<int_t>::min());
-  constexpr bool kUpperBoundIsMax =
+  constexpr bool kUpperBoundIsMax __attribute__((unused)) =
       static_cast<biggest_int_t>(kUpperBound) ==
       static_cast<biggest_int_t>(std::numeric_limits<int_t>::max());
   return (kLowerBoundIsMin ? (kLowerBound <= v) : (kLowerBound < v)) &&

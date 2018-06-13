@@ -558,8 +558,9 @@ static char* SkipBlackSpace(char* p) {
 
 
 // static
-int FlagList::SetFlagsFromString(const char* str, int len) {
+int FlagList::SetFlagsFromString(const char* str, int ilen) {
   // make a 0-terminated copy of str
+  unsigned len = ilen;
   ScopedVector<char> copy0(len + 1);
   MemCopy(copy0.start(), str, len);
   copy0[len] = '\0';
