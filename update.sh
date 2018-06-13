@@ -2,7 +2,7 @@
 
 set -e
 
-vers=6.7.18
+vers=6.7.19
 tools_vers=7e7a454f9afdddacf63e10be48f0eab603be654e
 base_vers=2d35e4d
 gn_vers=f833e90

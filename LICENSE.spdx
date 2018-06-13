@@ -1,7 +1,7 @@
 SPDXVersion: SPDX-2.1
 PackageLicenseDeclared: BSD-3-Clause
 PackageName: v8-linux
-PackageVersion: 6.7.18
+PackageVersion: 6.7.19
 PackageOriginator: Google Inc.
 PackageSupplier: TermySequence LLC
 PackageCopyrightText: <text>
