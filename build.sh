@@ -8,7 +8,7 @@ cd v8
 v8arch=${1:-x64}
 
 v8conf="use_sysroot=false use_gold=false linux_use_bundled_binutils=false \
-is_component_build=true clang_use_chrome_plugins=false libcpp_is_static=true \
+clang_use_chrome_plugins=false libcpp_is_static=true \
 v8_use_external_startup_data=false v8_target_cpu=\"$v8arch\" is_clang=false"
 
 if [ "$4" ]; then
