@@ -1,45 +1,43 @@
 #!/bin/bash
 
-# Arguments: buildarch cflags ldflags armfp
+# Arguments: builddir buildarch cflags ldflags armfp
 
 set -ex
 cd v8
 
-v8arch=${1:-x64}
+v8arch=${2:-x64}
+builddir=${1:-out.gn/$v8arch.release}
 
-v8conf="use_sysroot=false use_gold=false linux_use_bundled_binutils=false \
-clang_use_chrome_plugins=false libcpp_is_static=true \
-v8_use_external_startup_data=false v8_target_cpu=\"$v8arch\" is_clang=false"
+split_cflags=
+for i in $3; do split_cflags+="\"$i\", "; done
+split_ldflags=
+for j in $4; do split_ldflags+="\"$j\", "; done
 
-if [ "$4" ]; then
-    v8conf="$v8conf arm_float_abi=\"$4\""
+v8conf="v8_target_cpu=\"$v8arch\" \
+v8_static_library=true \
+v8_extra_library_files=[] \
+v8_experimental_extra_library_files=[] \
+use_sysroot=false \
+use_udev=false \
+use_gold=false \
+use_glib=false \
+use_dbus=false \
+use_custom_libcxx=false \
+symbol_level=1 \
+linux_use_bundled_binutils=false \
+is_desktop_linux=true \
+is_debug=false \
+is_component_build=false \
+is_clang=false \
+distro_ldflags=[ $split_ldflags ] \
+distro_cflags=[ \"-O2\", $split_cflags ]"
+
+if [ "$5" ]; then
+    v8conf="$v8conf arm_float_abi=\"$5\""
 fi
 
-SPLITOPTFLAGS=""
-for i in $2; do
-	SPLITOPTFLAGS+="\"$i\", "
-done
-export SPLITOPTFLAGS
-
-SPLITLDFLAGS=""
-for j in $3; do
-	SPLITLDFLAGS+="\"$j\", "
-done
-export SPLITLDFLAGS
-
-pushd build/config/compiler
-cp BUILD.gn.in BUILD.gn
-sed -i "s|\"\$OPTFLAGS\"|$SPLITOPTFLAGS|g" BUILD.gn
-sed -i "s|\"\$OPTLDFLAGS\"|$SPLITLDFLAGS|g" BUILD.gn
-popd
-
-cp -r gn tools
-(cd tools/gn/ && ./bootstrap/bootstrap.py -s)
-mkdir -p buildtools/linux64
-cp -a out/Release/gn buildtools/linux64/gn
-
-export PATH=$PATH:$(pwd)/depot_tools
-CHROMIUM_BUILDTOOLS_PATH=./buildtools/ gn gen out.gn/$v8arch.release --args="$v8conf"
-mkdir -p out.gn/$v8arch.release/gen/shim_headers/icui18n_shim/third_party/icu/source/i18n/unicode
-mkdir -p out.gn/$v8arch.release/gen/shim_headers/icuuc_shim/third_party/icu/source/common/unicode
-ninja -vvv -C out.gn/$v8arch.release -j2
+export PATH=$(pwd)/depot_tools:$PATH
+CHROMIUM_BUILDTOOLS_PATH=./buildtools/ gn gen $builddir --args="$v8conf"
+mkdir -p $builddir/gen/shim_headers/icui18n_shim/third_party/icu/source/i18n/unicode
+mkdir -p $builddir/gen/shim_headers/icuuc_shim/third_party/icu/source/common/unicode
+ninja -vvv -C $builddir -j2
