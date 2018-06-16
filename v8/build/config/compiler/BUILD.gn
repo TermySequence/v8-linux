@@ -1934,7 +1934,7 @@ config("optimize_speed") {
     # "default_optimization", below.
     configs = [ "//build/config/nacl:irt_optimize" ]
   } else {
-    ldflags = common_optimize_on_ldflags
+    ldflags = distro_ldflags + common_optimize_on_ldflags
     if (is_win) {
       # Favor speed over size, /O2 must be before the common flags. The GYP
       # build also specifies /Ot, /Oi, and /GF, but these are implied by /O2.
@@ -1955,7 +1955,7 @@ config("optimize_speed") {
     } else if (optimize_for_fuzzing) {
       cflags = [ "-O1" ] + common_optimize_on_cflags
     } else {
-      cflags = [ "-O3" ] + common_optimize_on_cflags
+      cflags = distro_cflags + common_optimize_on_cflags
     }
   }
 }
