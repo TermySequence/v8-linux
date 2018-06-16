@@ -123,6 +123,12 @@ if (current_os == "") {
 #   even if the value is overridden, which is wasteful. See first bullet.
 
 declare_args() {
+  # Extra CFLAGS to use in the build
+  distro_cflags = [ ]
+
+  # Extra LDFLAGS to use in the build
+  distro_ldflags = [ ]
+
   # Set to enable the official build level of optimization. This has nothing
   # to do with branding, but enables an additional level of optimization above
   # release (!is_debug). This might be better expressed as a tri-state
