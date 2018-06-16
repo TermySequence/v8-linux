@@ -68,11 +68,6 @@ fi
 rm -rf v8
 cp -r scratch/v8 .
 
-# Moves
-pushd v8/build/config/compiler
-mv BUILD.gn BUILD.gn.in
-popd
-
 # Exclusions
 pushd v8
 # Remove .gitignore files
