@@ -2022,7 +2022,6 @@ if (!is_ios) {
     ]
     deps = [
       ":base",
-      "//build/win:default_exe_manifest",
       "//third_party/icu:icuuc",
     ]
   }
@@ -2033,7 +2032,6 @@ if (!is_ios) {
     ]
     deps = [
       ":base",
-      "//build/win:default_exe_manifest",
     ]
   }
 }

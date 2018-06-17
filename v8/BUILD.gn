@@ -3025,8 +3025,6 @@ if (v8_monolithic) {
       ":v8_libbase",
       ":v8_libplatform",
       ":v8_libsampler",
-      "//build/config:exe_and_shlib_deps",
-      "//build/win:default_exe_manifest",
     ]
 
     configs = [ ":internal_config" ]
@@ -3053,8 +3051,6 @@ if (v8_use_snapshot && current_toolchain == v8_snapshot_toolchain) {
       ":v8_libbase",
       ":v8_libplatform",
       ":v8_nosnapshot",
-      "//build/config:exe_and_shlib_deps",
-      "//build/win:default_exe_manifest",
     ]
   }
 }
@@ -3107,8 +3103,6 @@ if (current_toolchain == v8_snapshot_toolchain) {
     deps = [
       ":v8_libbase",
       "third_party/antlr4:antlr4",
-      "//build/config:exe_and_shlib_deps",
-      "//build/win:default_exe_manifest",
     ]
 
     remove_configs = [
