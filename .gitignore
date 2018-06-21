@@ -1,6 +1,7 @@
 scratch/
 *.tar.*
 *.a
+*.o
 
 v8/out/
 v8/out.gn/

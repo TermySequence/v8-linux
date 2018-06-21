@@ -2,10 +2,10 @@
 
 set -e
 
-vers=6.7.19
-tools_vers=7e7a454f9afdddacf63e10be48f0eab603be654e
-base_vers=2d35e4d
-gn_vers=f833e90
+vers=6.8.275.14
+tools_vers=79d42dfb11746abb523643428926f2e745834d90
+base_vers=dd710bbda006f340bb04e7131dc07eff556b1d24
+gn_vers=90cda8e01c9f63c077fa2a9997380dbff3ed5203
 
 if [ "$1" = "--help" ]; then
     echo 'Usage: update.sh [--fetch]'
@@ -79,6 +79,11 @@ find . -type f -size +0c -print0 | perl -n0 -e 'chomp($a = $_); print if -B $a' 
 # Remove checksums
 find . -type f -name \*.sha1 -delete
 
+rm -rf base/android
+rm -rf base/ios
+rm -rf base/mac
+rm -rf base/win
+
 rm -rf depot_tools/man
 rm -f depot_tools/ninja*
 rm -rf depot_tools/recipes
@@ -88,14 +93,21 @@ rm -rf depot_tools/third_party
 rm -rf depot_tools/win_toolchain
 rm -rf depot_tools/zsh-goodies
 
+rm -rf gn/format_test_data
+
 rm -rf build/android
 rm -rf build/fuschia
 rm -rf build/linux
 rm -rf build/mac
 rm -rf build/win
+rm -rf buildtools/third_party/libc++/trunk/test
 
-# No tests
-rm -rf test
+# No tests except torque file
+pushd test
+for i in *; do
+    if [ "$i" != torque ]; then rm -rf "$i"; fi
+done
+popd
 
 # ICU source only
 pushd third_party/icu
@@ -106,13 +118,29 @@ cd source
 for i in *; do
     if [ "$i" != i18n -a "$i" != common ]; then rm -rf "$i"; fi
 done
+cd common
+for i in *; do
+    if [ "$i" != unicode ]; then rm -rf "$i"; fi
+done
+cd ../i18n
+for i in *; do
+    if [ "$i" != unicode ]; then rm -rf "$i"; fi
+done
 popd
 
 rm -rf third_party/binutils
 rm -rf third_party/depot_tools
-rm -rf third_party/googletest
+rm -rf third_party/dmg_fp
+rm -rf third_party/dynamic_annotations
 rm -rf third_party/instrumented_libraries
+rm -rf third_party/libevent
 rm -rf third_party/llvm-build
+rm -rf third_party/nspr
+rm -rf third_party/superfasthash
+rm -rf third_party/symbolize
+rm -rf third_party/valgrind
+rm -rf third_party/xdg_mime
+rm -rf third_party/xdg_user_dirs
 
 rm -rf tools/clang
 rm -rf tools/luci-go

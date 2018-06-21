@@ -14,6 +14,7 @@ split_ldflags=
 for j in $4; do split_ldflags+="\"$j\", "; done
 
 v8conf="v8_target_cpu=\"$v8arch\" \
+v8_untrusted_code_mitigations=false \
 v8_static_library=true \
 v8_extra_library_files=[] \
 v8_experimental_extra_library_files=[] \
@@ -23,6 +24,7 @@ use_gold=false \
 use_glib=false \
 use_dbus=false \
 use_custom_libcxx=false \
+use_aura=false \
 symbol_level=1 \
 linux_use_bundled_binutils=false \
 is_desktop_linux=true \
@@ -36,6 +38,7 @@ if [ "$5" ]; then
     v8conf="$v8conf arm_float_abi=\"$5\""
 fi
 
+mkdir -p $builddir
 export PATH=$(pwd)/depot_tools:$PATH
 CHROMIUM_BUILDTOOLS_PATH=./buildtools/ gn gen $builddir --args="$v8conf"
 mkdir -p $builddir/gen/shim_headers/icui18n_shim/third_party/icu/source/i18n/unicode
