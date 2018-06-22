@@ -3,8 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Provides a short mapping of all the branches in your local repo, organized
-by their upstream ('tracking branch') layout.
+"""Print dependency tree of branches in local repo.
 
 Example:
 origin/master
@@ -27,15 +26,17 @@ Branches are colorized as follows:
 
 import argparse
 import collections
-import sys
+import os
 import subprocess2
-
-from third_party import colorama
-from third_party.colorama import Fore, Style
+import sys
 
 from git_common import current_branch, upstream, tags, get_branches_info
 from git_common import get_git_version, MIN_UPSTREAM_TRACK_GIT_VERSION, hash_one
 from git_common import run
+
+import setup_color
+
+from third_party.colorama import Fore, Style
 
 DEFAULT_SEPARATOR = ' ' * 4
 
@@ -126,17 +127,20 @@ class BranchMapper(object):
         include_tracking_status=self.verbosity >= 1)
     if (self.verbosity >= 2):
       # Avoid heavy import unless necessary.
-      from git_cl import get_cl_statuses, color_for_status
+      from git_cl import get_cl_statuses, color_for_status, Changelist
 
-      status_info = get_cl_statuses(self.__branches_info.keys(),
+      change_cls = [Changelist(branchref='refs/heads/'+b)
+                    for b in self.__branches_info.keys() if b]
+      status_info = get_cl_statuses(change_cls,
                                     fine_grained=self.verbosity > 2,
                                     max_processes=self.maxjobs)
 
-      for _ in xrange(len(self.__branches_info)):
-        # This is a blocking get which waits for the remote CL status to be
-        # retrieved.
-        (branch, url, status) = status_info.next()
-        self.__status_info[branch] = (url, color_for_status(status))
+      # This is a blocking get which waits for the remote CL status to be
+      # retrieved.
+      for cl, status in status_info:
+        self.__status_info[cl.GetBranch()] = (cl.GetIssueURL(),
+                                              color_for_status(status),
+                                              status)
 
     roots = set()
 
@@ -174,7 +178,7 @@ class BranchMapper(object):
     return not parent or parent in self.__gone_branches
 
   def __color_for_branch(self, branch, branch_hash):
-    if branch.startswith('origin'):
+    if branch.startswith('origin/'):
       color = Fore.RED
     elif branch.startswith('branch-heads'):
       color = Fore.BLUE
@@ -256,13 +260,19 @@ class BranchMapper(object):
 
     # The Rietveld issue associated with the branch.
     if self.verbosity >= 2:
-      none_text = '' if self.__is_invalid_parent(branch) else 'None'
-      (url, color) = self.__status_info[branch]
-      line.append(url or none_text, color=color)
+      (url, color, status) = ('', '', '') if self.__is_invalid_parent(branch) \
+          else self.__status_info[branch]
+      if self.verbosity > 2:
+        line.append('{} ({})'.format(url, status) if url else '', color=color)
+      else:
+        line.append(url or '', color=color)
 
     # The subject of the most recent commit on the branch.
     if self.show_subject:
-      line.append(run('log', '-n1', '--format=%s', branch))
+      if branch:
+        line.append(run('log', '-n1', '--format=%s', branch, '--'))
+      else:
+        line.append('')
 
     self.output.append(line)
 
@@ -270,8 +280,21 @@ class BranchMapper(object):
       self.__append_branch(child, depth=depth + 1)
 
 
+def print_desc():
+  for line in __doc__.splitlines():
+    starpos = line.find('* ')
+    if starpos == -1 or '-' not in line:
+      print(line)
+    else:
+      _, color, rest = line.split(None, 2)
+      outline = line[:starpos+1]
+      outline += getattr(Fore, color.upper()) + " " + color + " " + Fore.RESET
+      outline += rest
+      print(outline)
+  print('')
+
 def main(argv):
-  colorama.init()
+  setup_color.init()
   if get_git_version() < MIN_UPSTREAM_TRACK_GIT_VERSION:
     print >> sys.stderr, (
         'This tool will not show all tracking information for git version '
@@ -279,10 +302,13 @@ def main(argv):
         '.'.join(str(x) for x in MIN_UPSTREAM_TRACK_GIT_VERSION) +
         '. Please consider upgrading.')
 
-  parser = argparse.ArgumentParser(
-      description='Print a a tree of all branches parented by their upstreams')
+  if '-h' in argv:
+    print_desc()
+
+  parser = argparse.ArgumentParser()
   parser.add_argument('-v', action='count',
-                      help='Display branch hash and Rietveld URL')
+                      help=('Pass once to show tracking info; '
+                           'twice for hash and review url'))
   parser.add_argument('--no-color', action='store_true', dest='nocolor',
                       help='Turn off colors.')
   parser.add_argument(

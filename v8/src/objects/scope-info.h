@@ -81,8 +81,16 @@ class ScopeInfo : public FixedArray {
   // Is this scope the scope of a named function expression?
   bool HasFunctionName() const;
 
-  bool HasPendingFunctionName() const;
-  void SetPendingFunctionName(String* name);
+  // See SharedFunctionInfo::HasSharedName.
+  bool HasSharedFunctionName() const;
+
+  bool HasInferredFunctionName() const;
+
+  void SetFunctionName(Object* name);
+  void SetInferredFunctionName(String* name);
+
+  // Does this scope belong to a function?
+  bool HasPositionInfo() const;
 
   // Return if contexts are allocated for this scope.
   bool HasContext() const;
@@ -93,7 +101,20 @@ class ScopeInfo : public FixedArray {
   inline bool HasSimpleParameters() const;
 
   // Return the function_name if present.
-  String* FunctionName() const;
+  Object* FunctionName() const;
+
+  // The function's name if it is non-empty, otherwise the inferred name or an
+  // empty string.
+  String* FunctionDebugName() const;
+
+  // Return the function's inferred name if present.
+  // See SharedFunctionInfo::function_identifier.
+  Object* InferredFunctionName() const;
+
+  // Position information accessors.
+  int StartPosition() const;
+  int EndPosition() const;
+  void SetPositionInfo(int start, int end);
 
   ModuleInfo* ModuleDescriptorInfo() const;
 
@@ -186,6 +207,7 @@ class ScopeInfo : public FixedArray {
                                   MaybeHandle<ScopeInfo> outer_scope);
   static Handle<ScopeInfo> CreateForWithScope(
       Isolate* isolate, MaybeHandle<ScopeInfo> outer_scope);
+  static Handle<ScopeInfo> CreateForEmptyFunction(Isolate* isolate);
   static Handle<ScopeInfo> CreateGlobalThisBinding(Isolate* isolate);
 
   // Serializes empty scope info.
@@ -252,9 +274,14 @@ class ScopeInfo : public FixedArray {
   //    information about the function variable. It always occupies two array
   //    slots:  a. The name of the function variable.
   //            b. The context or stack slot index for the variable.
-  // 8. OuterScopeInfoIndex:
+  // 8. InferredFunctionName:
+  //    Contains the function's inferred name.
+  // 9. SourcePosition:
+  //    Contains two slots with a) the startPosition and b) the endPosition if
+  //    the scope belongs to a function or script.
+  // 10. OuterScopeInfoIndex:
   //    The outer scope's ScopeInfo or the hole if there's none.
-  // 9. ModuleInfo, ModuleVariableCount, and ModuleVariables:
+  // 11. ModuleInfo, ModuleVariableCount, and ModuleVariables:
   //    For a module scope, this part contains the ModuleInfo, the number of
   //    MODULE-allocated variables, and the metadata of those variables.  For
   //    non-module scopes it is empty.
@@ -265,10 +292,16 @@ class ScopeInfo : public FixedArray {
   int ContextLocalInfosIndex() const;
   int ReceiverInfoIndex() const;
   int FunctionNameInfoIndex() const;
+  int InferredFunctionNameIndex() const;
+  int PositionInfoIndex() const;
   int OuterScopeInfoIndex() const;
   int ModuleInfoIndex() const;
   int ModuleVariableCountIndex() const;
   int ModuleVariablesIndex() const;
+
+  static bool NeedsPositionInfo(ScopeType type);
+  static Handle<ScopeInfo> CreateForBootstrapping(Isolate* isolate,
+                                                  ScopeType type);
 
   int Lookup(Handle<String> name, int start, int end, VariableMode* mode,
              VariableLocation* location, InitializationFlag* init_flag,
@@ -286,6 +319,9 @@ class ScopeInfo : public FixedArray {
   // the receiver.
   enum VariableAllocationInfo { NONE, STACK, CONTEXT, UNUSED };
 
+  static const int kFunctionNameEntries = 2;
+  static const int kPositionInfoEntries = 2;
+
   // Properties of scopes.
   class ScopeTypeField : public BitField<ScopeType, 0, 4> {};
   class CallsSloppyEvalField : public BitField<bool, ScopeTypeField::kNext, 1> {
@@ -302,8 +338,12 @@ class ScopeInfo : public FixedArray {
       : public BitField<bool, ReceiverVariableField::kNext, 1> {};
   class FunctionVariableField
       : public BitField<VariableAllocationInfo, HasNewTargetField::kNext, 2> {};
-  class AsmModuleField
+  // TODO(cbruni): Combine with function variable field when only storing the
+  // function name.
+  class HasInferredFunctionNameField
       : public BitField<bool, FunctionVariableField::kNext, 1> {};
+  class AsmModuleField
+      : public BitField<bool, HasInferredFunctionNameField::kNext, 1> {};
   class HasSimpleParametersField
       : public BitField<bool, AsmModuleField::kNext, 1> {};
   class FunctionKindField
@@ -321,7 +361,12 @@ class ScopeInfo : public FixedArray {
   class MaybeAssignedFlagField : public BitField<MaybeAssignedFlag, 4, 1> {};
 
   friend class ScopeIterator;
+  friend std::ostream& operator<<(std::ostream& os,
+                                  ScopeInfo::VariableAllocationInfo var);
 };
+
+std::ostream& operator<<(std::ostream& os,
+                         ScopeInfo::VariableAllocationInfo var);
 
 }  // namespace internal
 }  // namespace v8

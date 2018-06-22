@@ -14,13 +14,17 @@ namespace base {
 class SingleThreadTaskRunner;
 
 // A scoped wrapper around TestMockTimeTaskRunner that replaces
-// MessageLoop::current()'s task runner (and consequently
+// MessageLoopCurrent::Get()'s task runner (and consequently
 // ThreadTaskRunnerHandle) with a TestMockTimeTaskRunner and resets it back at
 // the end of its scope.
 //
 // Note: RunLoop() will not work in the scope of a
 // ScopedMockTimeMessageLoopTaskRunner, the underlying TestMockTimeTaskRunner's
 // methods must be used instead to pump tasks.
+//
+// DEPRECATED: Use a TestMockTimeTaskRunner::Type::kBoundToThread instead of a
+// MessageLoop + ScopedMockTimeMessageLoopTaskRunner.
+// TODO(gab): Remove usage of this API and delete it.
 class ScopedMockTimeMessageLoopTaskRunner {
  public:
   ScopedMockTimeMessageLoopTaskRunner();

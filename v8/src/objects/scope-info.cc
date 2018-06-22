@@ -57,6 +57,7 @@ bool ScopeInfo::Equals(ScopeInfo* other) const {
 }
 #endif
 
+// static
 Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
                                     MaybeHandle<ScopeInfo> outer_scope) {
   // Collect variables.
@@ -106,9 +107,11 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
     receiver_info = NONE;
   }
 
-  bool has_new_target =
+  const bool has_new_target =
       scope->is_declaration_scope() &&
       scope->AsDeclarationScope()->new_target_var() != nullptr;
+  // TODO(cbruni): Don't always waste a field for the inferred name.
+  const bool has_inferred_function_name = scope->is_function_scope();
 
   // Determine use and location of the function variable if it is present.
   VariableAllocationInfo function_name_info;
@@ -127,17 +130,25 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
       // Always reserve space for the debug name in the scope info.
       function_name_info = UNUSED;
     }
+  } else if (scope->is_module_scope() || scope->is_script_scope() ||
+             scope->is_eval_scope()) {
+    // Always reserve space for the debug name in the scope info.
+    function_name_info = UNUSED;
   } else {
     function_name_info = NONE;
   }
 
   const bool has_function_name = function_name_info != NONE;
+  const bool has_position_info = NeedsPositionInfo(scope->scope_type());
   const bool has_receiver = receiver_info == STACK || receiver_info == CONTEXT;
   const int parameter_count = scope->num_parameters();
   const bool has_outer_scope_info = !outer_scope.is_null();
   const int length = kVariablePartIndex + parameter_count +
                      (1 + stack_local_count) + 2 * context_local_count +
-                     (has_receiver ? 1 : 0) + (has_function_name ? 2 : 0) +
+                     (has_receiver ? 1 : 0) +
+                     (has_function_name ? kFunctionNameEntries : 0) +
+                     (has_inferred_function_name ? 1 : 0) +
+                     (has_position_info ? kPositionInfoEntries : 0) +
                      (has_outer_scope_info ? 1 : 0) +
                      (scope->is_module_scope()
                           ? 2 + kModuleVariableEntryLength * module_vars_count
@@ -169,6 +180,7 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
       ReceiverVariableField::encode(receiver_info) |
       HasNewTargetField::encode(has_new_target) |
       FunctionVariableField::encode(function_name_info) |
+      HasInferredFunctionNameField::encode(has_inferred_function_name) |
       AsmModuleField::encode(asm_module) |
       HasSimpleParametersField::encode(has_simple_parameters) |
       FunctionKindField::encode(function_kind) |
@@ -273,6 +285,18 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
            var_index == scope_info->ContextLength() - 1);
   }
 
+  DCHECK_EQ(index, scope_info->InferredFunctionNameIndex());
+  if (has_inferred_function_name) {
+    // The inferred function name is taken from the SFI.
+    index++;
+  }
+
+  DCHECK_EQ(index, scope_info->PositionInfoIndex());
+  if (has_position_info) {
+    scope_info->set(index++, Smi::FromInt(scope->start_position()));
+    scope_info->set(index++, Smi::FromInt(scope->end_position()));
+  }
+
   // If present, add the outer scope info.
   DCHECK(index == scope_info->OuterScopeInfoIndex());
   if (has_outer_scope_info) {
@@ -298,6 +322,7 @@ Handle<ScopeInfo> ScopeInfo::Create(Isolate* isolate, Zone* zone, Scope* scope,
   return scope_info;
 }
 
+// static
 Handle<ScopeInfo> ScopeInfo::CreateForWithScope(
     Isolate* isolate, MaybeHandle<ScopeInfo> outer_scope) {
   const bool has_outer_scope_info = !outer_scope.is_null();
@@ -330,6 +355,8 @@ Handle<ScopeInfo> ScopeInfo::CreateForWithScope(
   DCHECK_EQ(index, scope_info->StackLocalNamesIndex());
   DCHECK_EQ(index, scope_info->ReceiverInfoIndex());
   DCHECK_EQ(index, scope_info->FunctionNameInfoIndex());
+  DCHECK_EQ(index, scope_info->InferredFunctionNameIndex());
+  DCHECK_EQ(index, scope_info->PositionInfoIndex());
   DCHECK(index == scope_info->OuterScopeInfoIndex());
   if (has_outer_scope_info) {
     scope_info->set(index++, *outer_scope.ToHandleChecked());
@@ -340,38 +367,52 @@ Handle<ScopeInfo> ScopeInfo::CreateForWithScope(
   return scope_info;
 }
 
+// static
 Handle<ScopeInfo> ScopeInfo::CreateGlobalThisBinding(Isolate* isolate) {
-  DCHECK(isolate->bootstrapper()->IsActive());
+  return CreateForBootstrapping(isolate, SCRIPT_SCOPE);
+}
 
-  const int stack_local_count = 0;
-  const int context_local_count = 1;
-  const bool has_simple_parameters = true;
-  const VariableAllocationInfo receiver_info = CONTEXT;
-  const VariableAllocationInfo function_name_info = NONE;
-  const bool has_function_name = false;
-  const bool has_receiver = true;
-  const bool has_outer_scope_info = false;
+// static
+Handle<ScopeInfo> ScopeInfo::CreateForEmptyFunction(Isolate* isolate) {
+  return CreateForBootstrapping(isolate, FUNCTION_SCOPE);
+}
+
+// static
+Handle<ScopeInfo> ScopeInfo::CreateForBootstrapping(Isolate* isolate,
+                                                    ScopeType type) {
+  DCHECK(isolate->bootstrapper()->IsActive());
+  DCHECK(type == SCRIPT_SCOPE || type == FUNCTION_SCOPE);
+
   const int parameter_count = 0;
+  const int stack_local_count = 0;
+  const bool is_empty_function = type == FUNCTION_SCOPE;
+  const int context_local_count = is_empty_function ? 0 : 1;
+  const bool has_receiver = !is_empty_function;
+  const bool has_inferred_function_name = is_empty_function;
+  const bool has_position_info = true;
   const int length = kVariablePartIndex + parameter_count +
                      (1 + stack_local_count) + 2 * context_local_count +
-                     (has_receiver ? 1 : 0) + (has_function_name ? 2 : 0) +
-                     (has_outer_scope_info ? 1 : 0);
+                     (has_receiver ? 1 : 0) +
+                     (is_empty_function ? kFunctionNameEntries : 0) +
+                     (has_inferred_function_name ? 1 : 0) +
+                     (has_position_info ? kPositionInfoEntries : 0);
 
   Factory* factory = isolate->factory();
   Handle<ScopeInfo> scope_info = factory->NewScopeInfo(length);
 
   // Encode the flags.
-  int flags = ScopeTypeField::encode(SCRIPT_SCOPE) |
-              CallsSloppyEvalField::encode(false) |
-              LanguageModeField::encode(LanguageMode::kSloppy) |
-              DeclarationScopeField::encode(true) |
-              ReceiverVariableField::encode(receiver_info) |
-              FunctionVariableField::encode(function_name_info) |
-              AsmModuleField::encode(false) |
-              HasSimpleParametersField::encode(has_simple_parameters) |
-              FunctionKindField::encode(FunctionKind::kNormalFunction) |
-              HasOuterScopeInfoField::encode(has_outer_scope_info) |
-              IsDebugEvaluateScopeField::encode(false);
+  int flags =
+      ScopeTypeField::encode(type) | CallsSloppyEvalField::encode(false) |
+      LanguageModeField::encode(LanguageMode::kSloppy) |
+      DeclarationScopeField::encode(true) |
+      ReceiverVariableField::encode(is_empty_function ? UNUSED : CONTEXT) |
+      HasNewTargetField::encode(false) |
+      FunctionVariableField::encode(is_empty_function ? UNUSED : NONE) |
+      HasInferredFunctionNameField::encode(has_inferred_function_name) |
+      AsmModuleField::encode(false) | HasSimpleParametersField::encode(true) |
+      FunctionKindField::encode(FunctionKind::kNormalFunction) |
+      HasOuterScopeInfoField::encode(false) |
+      IsDebugEvaluateScopeField::encode(false);
   scope_info->SetFlags(flags);
   scope_info->SetParameterCount(parameter_count);
   scope_info->SetStackLocalCount(stack_local_count);
@@ -385,23 +426,45 @@ Handle<ScopeInfo> ScopeInfo::CreateGlobalThisBinding(Isolate* isolate) {
 
   // Here we add info for context-allocated "this".
   DCHECK_EQ(index, scope_info->ContextLocalNamesIndex());
-  scope_info->set(index++, isolate->heap()->this_string());
+  if (context_local_count) {
+    scope_info->set(index++, isolate->heap()->this_string());
+  }
   DCHECK_EQ(index, scope_info->ContextLocalInfosIndex());
-  const uint32_t value = VariableModeField::encode(CONST) |
-                         InitFlagField::encode(kCreatedInitialized) |
-                         MaybeAssignedFlagField::encode(kNotAssigned);
-  scope_info->set(index++, Smi::FromInt(value));
+  if (context_local_count) {
+    const uint32_t value = VariableModeField::encode(CONST) |
+                           InitFlagField::encode(kCreatedInitialized) |
+                           MaybeAssignedFlagField::encode(kNotAssigned);
+    scope_info->set(index++, Smi::FromInt(value));
+  }
 
   // And here we record that this scopeinfo binds a receiver.
   DCHECK_EQ(index, scope_info->ReceiverInfoIndex());
   const int receiver_index = Context::MIN_CONTEXT_SLOTS + 0;
-  scope_info->set(index++, Smi::FromInt(receiver_index));
+  if (!is_empty_function) {
+    scope_info->set(index++, Smi::FromInt(receiver_index));
+  }
 
   DCHECK_EQ(index, scope_info->FunctionNameInfoIndex());
+  if (is_empty_function) {
+    scope_info->set(index++, *isolate->factory()->empty_string());
+    scope_info->set(index++, Smi::kZero);
+  }
+  DCHECK_EQ(index, scope_info->InferredFunctionNameIndex());
+  if (has_inferred_function_name) {
+    scope_info->set(index++, *isolate->factory()->empty_string());
+  }
+  DCHECK_EQ(index, scope_info->PositionInfoIndex());
+  // Store dummy position to be in sync with the {scope_type}.
+  scope_info->set(index++, Smi::kZero);
+  scope_info->set(index++, Smi::kZero);
   DCHECK_EQ(index, scope_info->OuterScopeInfoIndex());
   DCHECK_EQ(index, scope_info->length());
-  DCHECK_EQ(scope_info->ParameterCount(), 0);
-  DCHECK_EQ(scope_info->ContextLength(), Context::MIN_CONTEXT_SLOTS + 1);
+  DCHECK_EQ(scope_info->ParameterCount(), parameter_count);
+  if (type == FUNCTION_SCOPE) {
+    DCHECK_EQ(scope_info->ContextLength(), 0);
+  } else {
+    DCHECK_EQ(scope_info->ContextLength(), Context::MIN_CONTEXT_SLOTS + 1);
+  }
 
   return scope_info;
 }
@@ -467,20 +530,14 @@ int ScopeInfo::ContextLength() const {
 }
 
 bool ScopeInfo::HasReceiver() const {
-  if (length() > 0) {
-    return NONE != ReceiverVariableField::decode(Flags());
-  } else {
-    return false;
-  }
+  if (length() == 0) return false;
+  return NONE != ReceiverVariableField::decode(Flags());
 }
 
 bool ScopeInfo::HasAllocatedReceiver() const {
-  if (length() > 0) {
-    VariableAllocationInfo allocation = ReceiverVariableField::decode(Flags());
-    return allocation == STACK || allocation == CONTEXT;
-  } else {
-    return false;
-  }
+  if (length() == 0) return false;
+  VariableAllocationInfo allocation = ReceiverVariableField::decode(Flags());
+  return allocation == STACK || allocation == CONTEXT;
 }
 
 bool ScopeInfo::HasNewTarget() const {
@@ -488,36 +545,49 @@ bool ScopeInfo::HasNewTarget() const {
 }
 
 bool ScopeInfo::HasFunctionName() const {
-  if (length() > 0) {
-    return NONE != FunctionVariableField::decode(Flags());
-  } else {
-    return false;
-  }
+  if (length() == 0) return false;
+  return NONE != FunctionVariableField::decode(Flags());
 }
 
-bool ScopeInfo::HasPendingFunctionName() const {
-  return HasFunctionName() && get(FunctionNameInfoIndex()) == Smi::kZero;
+bool ScopeInfo::HasInferredFunctionName() const {
+  if (length() == 0) return false;
+  return HasInferredFunctionNameField::decode(Flags());
 }
 
-void ScopeInfo::SetPendingFunctionName(String* name) {
-  DCHECK(HasPendingFunctionName());
+bool ScopeInfo::HasPositionInfo() const {
+  if (length() == 0) return false;
+  return NeedsPositionInfo(scope_type());
+}
+
+// static
+bool ScopeInfo::NeedsPositionInfo(ScopeType type) {
+  return type == FUNCTION_SCOPE || type == SCRIPT_SCOPE || type == EVAL_SCOPE ||
+         type == MODULE_SCOPE;
+}
+
+bool ScopeInfo::HasSharedFunctionName() const {
+  return FunctionName() != SharedFunctionInfo::kNoSharedNameSentinel;
+}
+
+void ScopeInfo::SetFunctionName(Object* name) {
+  DCHECK(HasFunctionName());
+  DCHECK(name->IsString() || name == SharedFunctionInfo::kNoSharedNameSentinel);
   set(FunctionNameInfoIndex(), name);
 }
 
+void ScopeInfo::SetInferredFunctionName(String* name) {
+  DCHECK(HasInferredFunctionName());
+  set(InferredFunctionNameIndex(), name);
+}
+
 bool ScopeInfo::HasOuterScopeInfo() const {
-  if (length() > 0) {
-    return HasOuterScopeInfoField::decode(Flags());
-  } else {
-    return false;
-  }
+  if (length() == 0) return false;
+  return HasOuterScopeInfoField::decode(Flags());
 }
 
 bool ScopeInfo::IsDebugEvaluateScope() const {
-  if (length() > 0) {
-    return IsDebugEvaluateScopeField::decode(Flags());
-  } else {
-    return false;
-  }
+  if (length() == 0) return false;
+  return IsDebugEvaluateScopeField::decode(Flags());
 }
 
 void ScopeInfo::SetIsDebugEvaluateScope() {
@@ -531,9 +601,43 @@ void ScopeInfo::SetIsDebugEvaluateScope() {
 
 bool ScopeInfo::HasContext() const { return ContextLength() > 0; }
 
-String* ScopeInfo::FunctionName() const {
+Object* ScopeInfo::FunctionName() const {
   DCHECK(HasFunctionName());
-  return String::cast(get(FunctionNameInfoIndex()));
+  return get(FunctionNameInfoIndex());
+}
+
+Object* ScopeInfo::InferredFunctionName() const {
+  DCHECK(HasInferredFunctionName());
+  return get(InferredFunctionNameIndex());
+}
+
+String* ScopeInfo::FunctionDebugName() const {
+  Object* name = FunctionName();
+  if (name->IsString() && String::cast(name)->length() > 0) {
+    return String::cast(name);
+  }
+  if (HasInferredFunctionName()) {
+    name = InferredFunctionName();
+    if (name->IsString()) return String::cast(name);
+  }
+  return GetHeap()->empty_string();
+}
+
+int ScopeInfo::StartPosition() const {
+  DCHECK(HasPositionInfo());
+  return Smi::cast(get(PositionInfoIndex()))->value();
+}
+
+int ScopeInfo::EndPosition() const {
+  DCHECK(HasPositionInfo());
+  return Smi::cast(get(PositionInfoIndex() + 1))->value();
+}
+
+void ScopeInfo::SetPositionInfo(int start, int end) {
+  DCHECK(HasPositionInfo());
+  DCHECK_LE(start, end);
+  set(PositionInfoIndex(), Smi::FromInt(start));
+  set(PositionInfoIndex() + 1, Smi::FromInt(end));
 }
 
 ScopeInfo* ScopeInfo::OuterScopeInfo() const {
@@ -619,14 +723,13 @@ bool ScopeInfo::VariableIsSynthetic(String* name) {
 
 int ScopeInfo::StackSlotIndex(String* name) const {
   DCHECK(name->IsInternalizedString());
-  if (length() > 0) {
-    int first_slot_index = Smi::ToInt(get(StackLocalFirstSlotIndex()));
-    int start = StackLocalNamesIndex();
-    int end = start + StackLocalCount();
-    for (int i = start; i < end; ++i) {
-      if (name == get(i)) {
-        return i - start + first_slot_index;
-      }
+  if (length() == 0) return -1;
+  int first_slot_index = Smi::ToInt(get(StackLocalFirstSlotIndex()));
+  int start = StackLocalNamesIndex();
+  int end = start + StackLocalCount();
+  for (int i = start; i < end; ++i) {
+    if (name == get(i)) {
+      return i - start + first_slot_index;
     }
   }
   return -1;
@@ -665,54 +768,53 @@ int ScopeInfo::ContextSlotIndex(Handle<ScopeInfo> scope_info,
   DCHECK_NOT_NULL(init_flag);
   DCHECK_NOT_NULL(maybe_assigned_flag);
 
-  if (scope_info->length() > 0) {
-    ContextSlotCache* context_slot_cache =
-        scope_info->GetIsolate()->context_slot_cache();
-    int result = context_slot_cache->Lookup(*scope_info, *name, mode, init_flag,
-                                            maybe_assigned_flag);
-    if (result != ContextSlotCache::kNotFound) {
+  if (scope_info->length() == 0) return -1;
+
+  ContextSlotCache* context_slot_cache =
+      scope_info->GetIsolate()->context_slot_cache();
+  int result = context_slot_cache->Lookup(*scope_info, *name, mode, init_flag,
+                                          maybe_assigned_flag);
+  if (result != ContextSlotCache::kNotFound) {
+    DCHECK_LT(result, scope_info->ContextLength());
+    return result;
+  }
+
+  int start = scope_info->ContextLocalNamesIndex();
+  int end = start + scope_info->ContextLocalCount();
+  for (int i = start; i < end; ++i) {
+    if (*name == scope_info->get(i)) {
+      int var = i - start;
+      *mode = scope_info->ContextLocalMode(var);
+      *init_flag = scope_info->ContextLocalInitFlag(var);
+      *maybe_assigned_flag = scope_info->ContextLocalMaybeAssignedFlag(var);
+      result = Context::MIN_CONTEXT_SLOTS + var;
+
+      context_slot_cache->Update(scope_info, name, *mode, *init_flag,
+                                 *maybe_assigned_flag, result);
       DCHECK_LT(result, scope_info->ContextLength());
       return result;
     }
-
-    int start = scope_info->ContextLocalNamesIndex();
-    int end = start + scope_info->ContextLocalCount();
-    for (int i = start; i < end; ++i) {
-      if (*name == scope_info->get(i)) {
-        int var = i - start;
-        *mode = scope_info->ContextLocalMode(var);
-        *init_flag = scope_info->ContextLocalInitFlag(var);
-        *maybe_assigned_flag = scope_info->ContextLocalMaybeAssignedFlag(var);
-        result = Context::MIN_CONTEXT_SLOTS + var;
-
-        context_slot_cache->Update(scope_info, name, *mode, *init_flag,
-                                   *maybe_assigned_flag, result);
-        DCHECK_LT(result, scope_info->ContextLength());
-        return result;
-      }
-    }
-    // Cache as not found. Mode, init flag and maybe assigned flag don't matter.
-    context_slot_cache->Update(scope_info, name, TEMPORARY,
-                               kNeedsInitialization, kNotAssigned, -1);
   }
+  // Cache as not found. Mode, init flag and maybe assigned flag don't matter.
+  context_slot_cache->Update(scope_info, name, TEMPORARY, kNeedsInitialization,
+                             kNotAssigned, -1);
 
   return -1;
 }
 
 int ScopeInfo::ParameterIndex(String* name) const {
   DCHECK(name->IsInternalizedString());
-  if (length() > 0) {
-    // We must read parameters from the end since for
-    // multiply declared parameters the value of the
-    // last declaration of that parameter is used
-    // inside a function (and thus we need to look
-    // at the last index). Was bug# 1110337.
-    int start = ParameterNamesIndex();
-    int end = start + ParameterCount();
-    for (int i = end - 1; i >= start; --i) {
-      if (name == get(i)) {
-        return i - start;
-      }
+  if (length() == 0) return -1;
+  // We must read parameters from the end since for
+  // multiply declared parameters the value of the
+  // last declaration of that parameter is used
+  // inside a function (and thus we need to look
+  // at the last index). Was bug# 1110337.
+  int start = ParameterNamesIndex();
+  int end = start + ParameterCount();
+  for (int i = end - 1; i >= start; --i) {
+    if (name == get(i)) {
+      return i - start;
     }
   }
   return -1;
@@ -769,8 +871,17 @@ int ScopeInfo::FunctionNameInfoIndex() const {
   return ReceiverInfoIndex() + (HasAllocatedReceiver() ? 1 : 0);
 }
 
+int ScopeInfo::InferredFunctionNameIndex() const {
+  return FunctionNameInfoIndex() +
+         (HasFunctionName() ? kFunctionNameEntries : 0);
+}
+
+int ScopeInfo::PositionInfoIndex() const {
+  return InferredFunctionNameIndex() + (HasInferredFunctionName() ? 1 : 0);
+}
+
 int ScopeInfo::OuterScopeInfoIndex() const {
-  return FunctionNameInfoIndex() + (HasFunctionName() ? 2 : 0);
+  return PositionInfoIndex() + (HasPositionInfo() ? kPositionInfoEntries : 0);
 }
 
 int ScopeInfo::ModuleInfoIndex() const {
@@ -811,6 +922,22 @@ void ScopeInfo::ModuleVariable(int i, String** name, int* index,
   if (maybe_assigned_flag != nullptr) {
     *maybe_assigned_flag = MaybeAssignedFlagField::decode(properties);
   }
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         ScopeInfo::VariableAllocationInfo var_info) {
+  switch (var_info) {
+    case ScopeInfo::VariableAllocationInfo::NONE:
+      return os << "NONE";
+    case ScopeInfo::VariableAllocationInfo::STACK:
+      return os << "STACK";
+    case ScopeInfo::VariableAllocationInfo::CONTEXT:
+      return os << "CONTEXT";
+    case ScopeInfo::VariableAllocationInfo::UNUSED:
+      return os << "UNUSED";
+  }
+  UNREACHABLE();
+  return os;
 }
 
 Handle<ModuleInfoEntry> ModuleInfoEntry::New(Isolate* isolate,

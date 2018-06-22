@@ -689,6 +689,9 @@ class Assembler : public AssemblerBase {
   inline static void deserialization_set_special_target_at(
       Address constant_pool_entry, Code* code, Address target);
 
+  // Get the size of the special target encoded at 'location'.
+  inline static int deserialization_special_target_size(Address location);
+
   // This sets the internal reference at the pc.
   inline static void deserialization_set_target_internal_reference_at(
       Address pc, Address target,
@@ -1491,16 +1494,13 @@ class Assembler : public AssemblerBase {
   void dq(uint64_t data);
   void dp(uintptr_t data) { dd(data); }
 
-  // Emits the address of the code stub's first instruction.
-  void emit_code_stub_address(Code* stub);
-
   // Read/patch instructions
   Instr instr_at(int pos) { return *reinterpret_cast<Instr*>(buffer_ + pos); }
   void instr_at_put(int pos, Instr instr) {
     *reinterpret_cast<Instr*>(buffer_ + pos) = instr;
   }
-  static Instr instr_at(byte* pc) { return *reinterpret_cast<Instr*>(pc); }
-  static void instr_at_put(byte* pc, Instr instr) {
+  static Instr instr_at(Address pc) { return *reinterpret_cast<Instr*>(pc); }
+  static void instr_at_put(Address pc, Instr instr) {
     *reinterpret_cast<Instr*>(pc) = instr;
   }
   static Condition GetCondition(Instr instr);
@@ -1820,15 +1820,14 @@ class UseScratchRegisterScope {
     return reg;
   }
 
+  // Check if we have registers available to acquire.
+  bool CanAcquire() const { return *assembler_->GetScratchRegisterList() != 0; }
+  bool CanAcquireD() const { return CanAcquireVfp<DwVfpRegister>(); }
+
  private:
   friend class Assembler;
   friend class TurboAssembler;
 
-  // Check if we have registers available to acquire.
-  // These methods are kept private intentionally to restrict their usage to the
-  // assemblers. Choosing to emit a difference instruction sequence depending on
-  // the availability of scratch registers is generally their job.
-  bool CanAcquire() const { return *assembler_->GetScratchRegisterList() != 0; }
   template <typename T>
   bool CanAcquireVfp() const;
 

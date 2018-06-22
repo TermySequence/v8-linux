@@ -20,20 +20,30 @@ class Smi;
 class MaybeObject {
  public:
   bool IsSmi() const { return HAS_SMI_TAG(this); }
-  inline bool IsSmi(Smi** value);
+  inline bool ToSmi(Smi** value);
+  inline Smi* ToSmi();
 
   bool IsClearedWeakHeapObject() {
-    return Internals::IsClearedWeakHeapObject(this);
+    return ::v8::internal::IsClearedWeakHeapObject(this);
   }
 
   inline bool IsStrongOrWeakHeapObject();
   inline bool ToStrongOrWeakHeapObject(HeapObject** result);
+  inline bool ToStrongOrWeakHeapObject(HeapObject** result,
+                                       HeapObjectReferenceType* reference_type);
   inline bool IsStrongHeapObject();
   inline bool ToStrongHeapObject(HeapObject** result);
+  inline HeapObject* ToStrongHeapObject();
   inline bool IsWeakHeapObject();
+  inline bool IsWeakOrClearedHeapObject();
   inline bool ToWeakHeapObject(HeapObject** result);
+  inline HeapObject* ToWeakHeapObject();
 
+  // Returns the HeapObject pointed to (either strongly or weakly).
   inline HeapObject* GetHeapObject();
+  inline Object* GetHeapObjectOrSmi();
+
+  inline Object* ToObject();
 
   static MaybeObject* FromSmi(Smi* smi) {
     DCHECK(HAS_SMI_TAG(smi));
@@ -41,11 +51,31 @@ class MaybeObject {
   }
 
   static MaybeObject* FromObject(Object* object) {
+    DCHECK(!HasWeakHeapObjectTag(object));
     return reinterpret_cast<MaybeObject*>(object);
   }
 
+  static inline MaybeObject* MakeWeak(MaybeObject* object);
+
 #ifdef VERIFY_HEAP
   static void VerifyMaybeObjectPointer(MaybeObject* p);
+#endif
+
+  // Prints this object without details.
+  void ShortPrint(FILE* out = stdout);
+
+  // Prints this object without details to a message accumulator.
+  void ShortPrint(StringStream* accumulator);
+
+  void ShortPrint(std::ostream& os);
+
+#ifdef OBJECT_PRINT
+  void Print();
+
+  void Print(std::ostream& os);
+#else
+  void Print() { ShortPrint(); }
+  void Print(std::ostream& os) { ShortPrint(os); }
 #endif
 
  private:
@@ -56,17 +86,16 @@ class MaybeObject {
 // reference to a HeapObject, or a cleared weak reference.
 class HeapObjectReference : public MaybeObject {
  public:
-  enum ReferenceType {
-    WEAK,
-    STRONG,
-  };
-
-  static HeapObjectReference* Strong(HeapObject* object) {
+  static HeapObjectReference* Strong(Object* object) {
+    DCHECK(!object->IsSmi());
+    DCHECK(!HasWeakHeapObjectTag(object));
     return reinterpret_cast<HeapObjectReference*>(object);
   }
 
-  static HeapObjectReference* Weak(HeapObject* object) {
-    return Internals::AddWeakHeapObjectMask(object);
+  static HeapObjectReference* Weak(Object* object) {
+    DCHECK(!object->IsSmi());
+    DCHECK(!HasWeakHeapObjectTag(object));
+    return AddWeakHeapObjectMask(object);
   }
 
   static HeapObjectReference* ClearedValue() {
@@ -78,7 +107,7 @@ class HeapObjectReference : public MaybeObject {
     DCHECK(Internals::HasHeapObjectTag(value));
 
 #ifdef DEBUG
-    bool weak_before = Internals::HasWeakHeapObjectTag(*slot);
+    bool weak_before = HasWeakHeapObjectTag(*slot);
 #endif
 
     *slot = reinterpret_cast<HeapObjectReference*>(
@@ -86,7 +115,7 @@ class HeapObjectReference : public MaybeObject {
         (reinterpret_cast<intptr_t>(*slot) & kWeakHeapObjectMask));
 
 #ifdef DEBUG
-    bool weak_after = Internals::HasWeakHeapObjectTag(*slot);
+    bool weak_after = HasWeakHeapObjectTag(*slot);
     DCHECK_EQ(weak_before, weak_after);
 #endif
   }

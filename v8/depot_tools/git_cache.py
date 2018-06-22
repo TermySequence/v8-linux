@@ -6,6 +6,7 @@
 """A git command for managing a local cache of git repositories."""
 
 from __future__ import print_function
+import contextlib
 import errno
 import logging
 import optparse
@@ -29,7 +30,7 @@ GC_AUTOPACKLIMIT = 50
 GIT_CACHE_CORRUPT_MESSAGE = 'WARNING: The Git cache is corrupt.'
 
 try:
-  # pylint: disable=E0602
+  # pylint: disable=undefined-variable
   WinErr = WindowsError
 except NameError:
   class WinErr(Exception):
@@ -38,14 +39,51 @@ except NameError:
 class LockError(Exception):
   pass
 
-class RefsHeadsFailedToFetch(Exception):
+class ClobberNeeded(Exception):
   pass
+
+
+def exponential_backoff_retry(fn, excs=(Exception,), name=None, count=10,
+                              sleep_time=0.25, printerr=None):
+  """Executes |fn| up to |count| times, backing off exponentially.
+
+  Args:
+    fn (callable): The function to execute. If this raises a handled
+        exception, the function will retry with exponential backoff.
+    excs (tuple): A tuple of Exception types to handle. If one of these is
+        raised by |fn|, a retry will be attempted. If |fn| raises an Exception
+        that is not in this list, it will immediately pass through. If |excs|
+        is empty, the Exception base class will be used.
+    name (str): Optional operation name to print in the retry string.
+    count (int): The number of times to try before allowing the exception to
+        pass through.
+    sleep_time (float): The initial number of seconds to sleep in between
+        retries. This will be doubled each retry.
+    printerr (callable): Function that will be called with the error string upon
+        failures. If None, |logging.warning| will be used.
+
+  Returns: The return value of the successful fn.
+  """
+  printerr = printerr or logging.warning
+  for i in xrange(count):
+    try:
+      return fn()
+    except excs as e:
+      if (i+1) >= count:
+        raise
+
+      printerr('Retrying %s in %.2f second(s) (%d / %d attempts): %s' % (
+          (name or 'operation'), sleep_time, (i+1), count, e))
+      time.sleep(sleep_time)
+      sleep_time *= 2
+
 
 class Lockfile(object):
   """Class to represent a cross-platform process-specific lockfile."""
 
-  def __init__(self, path):
+  def __init__(self, path, timeout=0):
     self.path = os.path.abspath(path)
+    self.timeout = timeout
     self.lockfile = self.path + ".lock"
     self.pid = os.getpid()
 
@@ -78,29 +116,41 @@ class Lockfile(object):
     """
     if sys.platform == 'win32':
       lockfile = os.path.normcase(self.lockfile)
-      for _ in xrange(3):
+
+      def delete():
         exitcode = subprocess.call(['cmd.exe', '/c',
                                     'del', '/f', '/q', lockfile])
-        if exitcode == 0:
-          return
-        time.sleep(3)
-      raise LockError('Failed to remove lock: %s' % lockfile)
+        if exitcode != 0:
+          raise LockError('Failed to remove lock: %s' % (lockfile,))
+      exponential_backoff_retry(
+          delete,
+          excs=(LockError,),
+          name='del [%s]' % (lockfile,))
     else:
       os.remove(self.lockfile)
 
   def lock(self):
     """Acquire the lock.
 
-    Note: This is a NON-BLOCKING FAIL-FAST operation.
-    Do. Or do not. There is no try.
+    This will block with a deadline of self.timeout seconds.
     """
-    try:
-      self._make_lockfile()
-    except OSError as e:
-      if e.errno == errno.EEXIST:
-        raise LockError("%s is already locked" % self.path)
-      else:
-        raise LockError("Failed to create %s (err %s)" % (self.path, e.errno))
+    elapsed = 0
+    while True:
+      try:
+        self._make_lockfile()
+        return
+      except OSError as e:
+        if elapsed < self.timeout:
+          sleep_time = max(10, min(3, self.timeout - elapsed))
+          logging.info('Could not create git cache lockfile; '
+                       'will retry after sleep(%d).', sleep_time);
+          elapsed += sleep_time
+          time.sleep(sleep_time)
+          continue
+        if e.errno == errno.EEXIST:
+          raise LockError("%s is already locked" % self.path)
+        else:
+          raise LockError("Failed to create %s (err %s)" % (self.path, e.errno))
 
   def unlock(self):
     """Release the lock."""
@@ -171,15 +221,26 @@ class Mirror(object):
     else:
       self.print = print
 
-  def print_without_file(self, message, **kwargs):
+  def print_without_file(self, message, **_kwargs):
     self.print_func(message)
+
+  @contextlib.contextmanager
+  def print_duration_of(self, what):
+    start = time.time()
+    try:
+      yield
+    finally:
+      self.print('%s took %.1f minutes' % (what, (time.time() - start) / 60.0))
 
   @property
   def bootstrap_bucket(self):
-    if 'chrome-internal' in self.url:
-      return 'chrome-git-cache'
-    else:
+    u = urlparse.urlparse(self.url)
+    if u.netloc == 'chromium.googlesource.com':
       return 'chromium-git-cache'
+    elif u.netloc == 'chrome-internal.googlesource.com':
+      return 'chrome-git-cache'
+    # Not recognized.
+    return None
 
   @classmethod
   def FromPath(cls, path):
@@ -220,6 +281,16 @@ class Mirror(object):
         setattr(cls, 'cachepath', cachepath)
       return getattr(cls, 'cachepath')
 
+  def Rename(self, src, dst):
+    # This is somehow racy on Windows.
+    # Catching OSError because WindowsError isn't portable and
+    # pylint complains.
+    exponential_backoff_retry(
+        lambda: os.rename(src, dst),
+        excs=(OSError,),
+        name='rename [%s] => [%s]' % (src, dst),
+        printerr=self.print)
+
   def RunGit(self, cmd, **kwargs):
     """Run git in a subprocess."""
     cwd = kwargs.setdefault('cwd', self.mirror_path)
@@ -236,12 +307,17 @@ class Mirror(object):
       cwd = self.mirror_path
 
     # Don't run git-gc in a daemon.  Bad things can happen if it gets killed.
-    self.RunGit(['config', 'gc.autodetach', '0'], cwd=cwd)
+    try:
+      self.RunGit(['config', 'gc.autodetach', '0'], cwd=cwd)
+    except subprocess.CalledProcessError:
+      # Hard error, need to clobber.
+      raise ClobberNeeded()
 
     # Don't combine pack files into one big pack file.  It's really slow for
     # repositories, and there's no way to track progress and make sure it's
     # not stuck.
-    self.RunGit(['config', 'gc.autopacklimit', '0'], cwd=cwd)
+    if self.supported_project():
+      self.RunGit(['config', 'gc.autopacklimit', '0'], cwd=cwd)
 
     # Allocate more RAM for cache-ing delta chains, for better performance
     # of "Resolving deltas".
@@ -257,11 +333,12 @@ class Mirror(object):
           cwd=cwd)
 
   def bootstrap_repo(self, directory):
-    """Bootstrap the repo from Google Stroage if possible.
+    """Bootstrap the repo from Google Storage if possible.
 
     More apt-ly named bootstrap_repo_from_cloud_if_possible_else_do_nothing().
     """
-
+    if not self.bootstrap_bucket:
+      return False
     python_fallback = False
     if (sys.platform.startswith('win') and
         not gclient_utils.FindExecutable('7z')):
@@ -275,10 +352,13 @@ class Mirror(object):
     gs_folder = 'gs://%s/%s' % (self.bootstrap_bucket, self.basedir)
     gsutil = Gsutil(self.gsutil_exe, boto_path=None)
     # Get the most recent version of the zipfile.
-    _, ls_out, _ = gsutil.check_call('ls', gs_folder)
+    _, ls_out, ls_err = gsutil.check_call('ls', gs_folder)
     ls_out_sorted = sorted(ls_out.splitlines())
     if not ls_out_sorted:
       # This repo is not on Google Storage.
+      self.print('No bootstrap file for %s found in %s, stderr:\n  %s' %
+                 (self.mirror_path, self.bootstrap_bucket,
+                  '  '.join((ls_err or '').splitlines(True))))
       return False
     latest_checkout = ls_out_sorted[-1]
 
@@ -286,31 +366,41 @@ class Mirror(object):
     try:
       tempdir = tempfile.mkdtemp(prefix='_cache_tmp', dir=self.GetCachePath())
       self.print('Downloading %s' % latest_checkout)
-      code = gsutil.call('cp', latest_checkout, tempdir)
+      with self.print_duration_of('download'):
+        code = gsutil.call('cp', latest_checkout, tempdir)
       if code:
         return False
       filename = os.path.join(tempdir, latest_checkout.split('/')[-1])
 
       # Unpack the file with 7z on Windows, unzip on linux, or fallback.
-      if not python_fallback:
-        if sys.platform.startswith('win'):
-          cmd = ['7z', 'x', '-o%s' % directory, '-tzip', filename]
+      with self.print_duration_of('unzip'):
+        if not python_fallback:
+          if sys.platform.startswith('win'):
+            cmd = ['7z', 'x', '-o%s' % directory, '-tzip', filename]
+          else:
+            cmd = ['unzip', filename, '-d', directory]
+          retcode = subprocess.call(cmd)
         else:
-          cmd = ['unzip', filename, '-d', directory]
-        retcode = subprocess.call(cmd)
-      else:
-        try:
-          with zipfile.ZipFile(filename, 'r') as f:
-            f.printdir()
-            f.extractall(directory)
-        except Exception as e:
-          self.print('Encountered error: %s' % str(e), file=sys.stderr)
-          retcode = 1
-        else:
-          retcode = 0
+          try:
+            with zipfile.ZipFile(filename, 'r') as f:
+              f.printdir()
+              f.extractall(directory)
+          except Exception as e:
+            self.print('Encountered error: %s' % str(e), file=sys.stderr)
+            retcode = 1
+          else:
+            retcode = 0
     finally:
       # Clean up the downloaded zipfile.
-      gclient_utils.rm_file_or_tree(tempdir)
+      #
+      # This is somehow racy on Windows.
+      # Catching OSError because WindowsError isn't portable and
+      # pylint complains.
+      exponential_backoff_retry(
+          lambda: gclient_utils.rm_file_or_tree(tempdir),
+          excs=(OSError,),
+          name='rmtree [%s]' % (tempdir,),
+          printerr=self.print)
 
     if retcode:
       self.print(
@@ -319,8 +409,33 @@ class Mirror(object):
       return False
     return True
 
+  def contains_revision(self, revision):
+    if not self.exists():
+      return False
+
+    if sys.platform.startswith('win'):
+      # Windows .bat scripts use ^ as escape sequence, which means we have to
+      # escape it with itself for every .bat invocation.
+      needle = '%s^^^^{commit}' % revision
+    else:
+      needle = '%s^{commit}' % revision
+    try:
+      # cat-file exits with 0 on success, that is git object of given hash was
+      # found.
+      self.RunGit(['cat-file', '-e', needle])
+      return True
+    except subprocess.CalledProcessError:
+      return False
+
   def exists(self):
     return os.path.isfile(os.path.join(self.mirror_path, 'config'))
+
+  def supported_project(self):
+    """Returns true if this repo is known to have a bootstrap zip file."""
+    u = urlparse.urlparse(self.url)
+    return u.netloc in [
+        'chromium.googlesource.com',
+        'chrome-internal.googlesource.com']
 
   def _preserve_fetchspec(self):
     """Read and preserve remote.origin.fetch from an existing mirror.
@@ -348,6 +463,8 @@ class Mirror(object):
 
     if os.path.isdir(pack_dir):
       pack_files = [f for f in os.listdir(pack_dir) if f.endswith('.pack')]
+      self.print('%s has %d .pack files, re-bootstrapping if >%d' %
+                 (self.mirror_path, len(pack_files), GC_AUTOPACKLIMIT))
 
     should_bootstrap = (force or
                         not self.exists() or
@@ -362,14 +479,17 @@ class Mirror(object):
       if bootstrapped:
         # Bootstrap succeeded; delete previous cache, if any.
         gclient_utils.rmtree(self.mirror_path)
-      elif not self.exists():
-        # Bootstrap failed, no previous cache; start with a bare git dir.
+      elif not self.exists() or not self.supported_project():
+        # Bootstrap failed due to either
+        # 1. No previous cache
+        # 2. Project doesn't have a bootstrap zip file
+        # Start with a bare git dir.
         self.RunGit(['init', '--bare'], cwd=tempdir)
       else:
         # Bootstrap failed, previous cache exists; warn and continue.
         logging.warn(
-            'Git cache has a lot of pack files (%d).  Tried to re-bootstrap '
-            'but failed.  Continuing with non-optimized repository.'
+            'Git cache has a lot of pack files (%d). Tried to re-bootstrap '
+            'but failed. Continuing with non-optimized repository.'
             % len(pack_files))
         gclient_utils.rmtree(tempdir)
         tempdir = None
@@ -394,20 +514,21 @@ class Mirror(object):
     for spec in fetch_specs:
       try:
         self.print('Fetching %s' % spec)
-        self.RunGit(fetch_cmd + [spec], cwd=rundir, retry=True)
+        with self.print_duration_of('fetch %s' % spec):
+          self.RunGit(fetch_cmd + [spec], cwd=rundir, retry=True)
       except subprocess.CalledProcessError:
         if spec == '+refs/heads/*:refs/heads/*':
-          raise RefsHeadsFailedToFetch
+          raise ClobberNeeded()  # Corrupted cache.
         logging.warn('Fetch of %s failed' % spec)
 
   def populate(self, depth=None, shallow=False, bootstrap=False,
-               verbose=False, ignore_lock=False):
+               verbose=False, ignore_lock=False, lock_timeout=0):
     assert self.GetCachePath()
     if shallow and not depth:
       depth = 10000
     gclient_utils.safe_makedirs(self.GetCachePath())
 
-    lockfile = Lockfile(self.mirror_path)
+    lockfile = Lockfile(self.mirror_path, lock_timeout)
     if not ignore_lock:
       lockfile.lock()
 
@@ -416,25 +537,18 @@ class Mirror(object):
       tempdir = self._ensure_bootstrapped(depth, bootstrap)
       rundir = tempdir or self.mirror_path
       self._fetch(rundir, verbose, depth)
-    except RefsHeadsFailedToFetch:
+    except ClobberNeeded:
       # This is a major failure, we need to clean and force a bootstrap.
       gclient_utils.rmtree(rundir)
       self.print(GIT_CACHE_CORRUPT_MESSAGE)
       tempdir = self._ensure_bootstrapped(depth, bootstrap, force=True)
       assert tempdir
-      self._fetch(tempdir or self.mirror_path, verbose, depth)
+      self._fetch(tempdir, verbose, depth)
     finally:
       if tempdir:
-        try:
-          if os.path.exists(self.mirror_path):
-            gclient_utils.rmtree(self.mirror_path)
-          os.rename(tempdir, self.mirror_path)
-        except OSError as e:
-          # This is somehow racy on Windows.
-          # Catching OSError because WindowsError isn't portable and
-          # pylint complains.
-          self.print('Error moving %s to %s: %s' % (tempdir, self.mirror_path,
-                                                    str(e)))
+        if os.path.exists(self.mirror_path):
+          gclient_utils.rmtree(self.mirror_path)
+        self.Rename(tempdir, self.mirror_path)
       if not ignore_lock:
         lockfile.unlock()
 
@@ -582,6 +696,7 @@ def CMDpopulate(parser, args):
       'shallow': options.shallow,
       'bootstrap': not options.no_bootstrap,
       'ignore_lock': options.ignore_locks,
+      'lock_timeout': options.timeout,
   }
   if options.depth:
     kwargs['depth'] = options.depth
@@ -625,7 +740,8 @@ def CMDfetch(parser, args):
   git_dir = os.path.abspath(git_dir)
   if git_dir.startswith(cachepath):
     mirror = Mirror.FromPath(git_dir)
-    mirror.populate(bootstrap=not options.no_bootstrap)
+    mirror.populate(
+        bootstrap=not options.no_bootstrap, lock_timeout=options.timeout)
     return 0
   for remote in remotes:
     remote_url = subprocess.check_output(
@@ -634,7 +750,8 @@ def CMDfetch(parser, args):
       mirror = Mirror.FromPath(remote_url)
       mirror.print = lambda *args: None
       print('Updating git cache...')
-      mirror.populate(bootstrap=not options.no_bootstrap)
+      mirror.populate(
+          bootstrap=not options.no_bootstrap, lock_timeout=options.timeout)
     subprocess.check_call([Mirror.git_exe, 'fetch', remote])
   return 0
 
@@ -683,6 +800,8 @@ class OptionParser(optparse.OptionParser):
                     help='Increase verbosity (can be passed multiple times)')
     self.add_option('-q', '--quiet', action='store_true',
                     help='Suppress all extraneous output')
+    self.add_option('--timeout', type='int', default=0,
+                    help='Timeout for acquiring cache lock, in seconds')
 
   def parse_args(self, args=None, values=None):
     options, args = optparse.OptionParser.parse_args(self, args, values)

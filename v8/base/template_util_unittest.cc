@@ -92,15 +92,15 @@ static_assert(!base::is_trivially_copyable<TrivialCopyButWithDestructor>::value,
               "TrivialCopyButWithDestructor should not be detected as "
               "trivially copyable");
 
+class NoCopy {
+ public:
+  NoCopy(const NoCopy&) = delete;
+};
+
+static_assert(
+    !base::is_trivially_copy_constructible<std::vector<NoCopy>>::value,
+    "is_trivially_copy_constructible<std::vector<T>> must be compiled.");
+
 }  // namespace
-
-TEST(TemplateUtil, Less) {
-  using ExplicitInt = base::MoveOnlyInt;
-  EXPECT_TRUE(base::less()(ExplicitInt(3), 4));
-  EXPECT_FALSE(base::less()(4, ExplicitInt(3)));
-  EXPECT_TRUE(base::less()(3, 4));
-
-  static_assert(base::internal::IsTransparentCompare<base::less>::value, "");
-}
 
 }  // namespace base

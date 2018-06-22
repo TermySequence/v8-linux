@@ -26,6 +26,8 @@ import subprocess
 import sys
 import textwrap
 
+import git_common
+
 from distutils import spawn
 
 
@@ -59,11 +61,15 @@ class Checkout(object):
   def sync(self):
     pass
 
-  def run(self, cmd, **kwargs):
+  def run(self, cmd, return_stdout=False, **kwargs):
     print 'Running: %s' % (' '.join(pipes.quote(x) for x in cmd))
     if self.options.dry_run:
       return ''
-    return subprocess.check_output(cmd, **kwargs)
+    if return_stdout:
+      return subprocess.check_output(cmd, **kwargs)
+    else:
+      subprocess.check_call(cmd, **kwargs)
+      return ''
 
 
 class GclientCheckout(Checkout):
@@ -77,7 +83,7 @@ class GclientCheckout(Checkout):
 
   def exists(self):
     try:
-      gclient_root = self.run_gclient('root').strip()
+      gclient_root = self.run_gclient('root', return_stdout=True).strip()
       return (os.path.exists(os.path.join(gclient_root, '.gclient')) or
               os.path.exists(os.path.join(os.getcwd(), self.root)))
     except subprocess.CalledProcessError:
@@ -88,21 +94,10 @@ class GclientCheckout(Checkout):
 class GitCheckout(Checkout):
 
   def run_git(self, *cmd, **kwargs):
-    if sys.platform == 'win32' and not spawn.find_executable('git'):
-      git_path = os.path.join(SCRIPT_PATH, 'git.bat')
-    else:
-      git_path = 'git'
-    return self.run((git_path,) + cmd, **kwargs)
-
-
-class SvnCheckout(Checkout):
-
-  def run_svn(self, *cmd, **kwargs):
-    if sys.platform == 'win32' and not spawn.find_executable('svn'):
-      svn_path = os.path.join(SCRIPT_PATH, 'svn_bin', 'svn.exe')
-    else:
-      svn_path = 'svn'
-    return self.run((svn_path,) + cmd, **kwargs)
+    print 'Running: git %s' % (' '.join(pipes.quote(x) for x in cmd))
+    if self.options.dry_run:
+      return ''
+    return git_common.run(*cmd, **kwargs)
 
 
 class GclientGitCheckout(GclientCheckout, GitCheckout):
@@ -124,7 +119,7 @@ class GclientGitCheckout(GclientCheckout, GitCheckout):
                              for key, value in soln.iteritems())
       soln_strings.append('  {\n%s\n  },' % soln_string)
     gclient_spec = 'solutions = [\n%s\n]\n' % '\n'.join(soln_strings)
-    extra_keys = ['target_os', 'target_os_only']
+    extra_keys = ['target_os', 'target_os_only', 'cache_dir']
     gclient_spec += ''.join('%s = %s\n' % (key, _format_literal(self.spec[key]))
                              for key in extra_keys if key in self.spec)
     return gclient_spec
@@ -149,58 +144,16 @@ class GclientGitCheckout(GclientCheckout, GitCheckout):
         'submodule', 'foreach',
         'git config -f $toplevel/.git/config submodule.$name.ignore all',
         cwd=wd)
-    self.run_git(
-        'config', '--add', 'remote.origin.fetch',
-        '+refs/tags/*:refs/tags/*', cwd=wd)
+    if not self.options.no_history:
+      self.run_git(
+          'config', '--add', 'remote.origin.fetch',
+          '+refs/tags/*:refs/tags/*', cwd=wd)
     self.run_git('config', 'diff.ignoreSubmodules', 'all', cwd=wd)
-
-
-class GclientGitSvnCheckout(GclientGitCheckout, SvnCheckout):
-
-  def __init__(self, options, spec, root):
-    super(GclientGitSvnCheckout, self).__init__(options, spec, root)
-
-  def init(self):
-    # Ensure we are authenticated with subversion for all submodules.
-    git_svn_dirs = json.loads(self.spec.get('submodule_git_svn_spec', '{}'))
-    git_svn_dirs.update({self.root: self.spec})
-    for _, svn_spec in git_svn_dirs.iteritems():
-      if svn_spec.get('svn_url'):
-        try:
-          self.run_svn('ls', '--non-interactive', svn_spec['svn_url'])
-        except subprocess.CalledProcessError:
-          print 'Please run `svn ls %s`' % svn_spec['svn_url']
-          return 1
-
-    super(GclientGitSvnCheckout, self).init()
-
-    # Configure git-svn.
-    for path, svn_spec in git_svn_dirs.iteritems():
-      real_path = os.path.join(*path.split('/'))
-      if real_path != self.root:
-        real_path = os.path.join(self.root, real_path)
-      wd = os.path.join(self.base, real_path)
-      if self.options.dry_run:
-        print 'cd %s' % wd
-      if svn_spec.get('auto'):
-        self.run_git('auto-svn', cwd=wd)
-        continue
-      self.run_git('svn', 'init', svn_spec['svn_url'], cwd=wd)
-      self.run_git('config', '--unset-all', 'svn-remote.svn.fetch', cwd=wd)
-      for svn_branch, git_ref in svn_spec.get('git_svn_fetch', {}).items():
-        self.run_git('config', '--add', 'svn-remote.svn.fetch',
-                     '%s:%s' % (svn_branch, git_ref), cwd=wd)
-      for svn_branch, git_ref in svn_spec.get('git_svn_branches', {}).items():
-        self.run_git('config', '--add', 'svn-remote.svn.branches',
-                     '%s:%s' % (svn_branch, git_ref), cwd=wd)
-      self.run_git('svn', 'fetch', cwd=wd)
-
 
 
 CHECKOUT_TYPE_MAP = {
     'gclient':         GclientCheckout,
     'gclient_git':     GclientGitCheckout,
-    'gclient_git_svn': GclientGitSvnCheckout,
     'git':             GitCheckout,
 }
 
@@ -231,6 +184,7 @@ def usage(msg=None):
     Valid options:
        -h, --help, help   Print this message.
        --nohooks          Don't run hooks after checkout.
+       --force            (dangerous) Don't look for existing .gclient file.
        -n, --dry-run      Don't run commands, only print them.
        --no-history       Perform shallow clones, don't fetch the full git history.
 
@@ -255,6 +209,7 @@ def handle_args(argv):
   dry_run = False
   nohooks = False
   no_history = False
+  force = False
   while len(argv) >= 2:
     arg = argv[1]
     if not arg.startswith('-'):
@@ -266,6 +221,8 @@ def handle_args(argv):
       nohooks = True
     elif arg == '--no-history':
       no_history = True
+    elif arg == '--force':
+      force = True
     else:
       usage('Invalid option %s.' % arg)
 
@@ -279,8 +236,11 @@ def handle_args(argv):
   config = argv[1]
   props = argv[2:]
   return (
-      optparse.Values(
-          {'dry_run':dry_run, 'nohooks':nohooks, 'no_history': no_history }),
+      optparse.Values({
+        'dry_run': dry_run,
+        'nohooks': nohooks,
+        'no_history': no_history,
+        'force': force}),
       config,
       props)
 
@@ -324,7 +284,7 @@ def run(options, spec, root):
     checkout = CheckoutFactory(checkout_type, options, checkout_spec, root)
   except KeyError:
     return 1
-  if checkout.exists():
+  if not options.force and checkout.exists():
     print 'Your current directory appears to already contain, or be part of, '
     print 'a checkout. "fetch" is used only to get new checkouts. Use '
     print '"gclient sync" to update existing checkouts.'

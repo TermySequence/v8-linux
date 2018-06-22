@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <iostream>
+#include <memory>
 #include <utility>
 
 #include "base/environment.h"
@@ -337,8 +338,8 @@ Value RunConfig(const FunctionCallNode* function,
     g_scheduler->Log("Defining config", label.GetUserVisibleName(true));
 
   // Create the new config.
-  std::unique_ptr<Config> config(
-      new Config(scope->settings(), label, scope->input_files()));
+  std::unique_ptr<Config> config = std::make_unique<Config>(
+      scope->settings(), label, scope->build_dependency_files());
   config->set_defined_from(function);
   if (!Visibility::FillItemVisibility(config.get(), scope, err))
     return Value();
@@ -553,7 +554,7 @@ const char kGetEnv_Help[] =
 
   value = getenv(env_var_name)
 
-  Returns the value of the given enironment variable. If the value is not
+  Returns the value of the given environment variable. If the value is not
   found, it will try to look up the variable with the "opposite" case (based on
   the case of the first letter of the variable), but is otherwise
   case-sensitive.
@@ -632,6 +633,7 @@ Value RunImport(Scope* scope,
   SourceFile import_file =
       input_dir.ResolveRelativeFile(args[0], err,
           scope->settings()->build_settings()->root_path_utf8());
+  scope->AddBuildDependencyFile(import_file);
   if (!err->has_error()) {
     scope->settings()->import_manager().DoImport(import_file, function,
                                                  scope, err);
@@ -669,7 +671,7 @@ Value RunNotNeeded(Scope* scope,
                    const ListNode* args_list,
                    Err* err) {
   const auto& args_vector = args_list->contents();
-  if (args_vector.size() < 1 && args_vector.size() > 3) {
+  if (args_vector.size() < 1 || args_vector.size() > 3) {
     *err = Err(function, "Wrong number of arguments.",
                "Expecting one, two or three arguments.");
     return Value();
@@ -744,7 +746,10 @@ Value RunNotNeeded(Scope* scope,
     for (const Value& cur : value->list_value()) {
       if (!cur.VerifyTypeIs(Value::STRING, err))
         return Value();
-      source->MarkUsed(cur.string_value());
+      if (!source->GetValue(cur.string_value(), true)) {
+        *err = Err(cur, "Undefined identifier");
+        return Value();
+      }
     }
     return Value();
   }
@@ -826,7 +831,7 @@ Value RunSetSourcesAssignmentFilter(Scope* scope,
   if (args.size() != 1) {
     *err = Err(function, "set_sources_assignment_filter takes one argument.");
   } else {
-    std::unique_ptr<PatternList> f(new PatternList);
+    std::unique_ptr<PatternList> f = std::make_unique<PatternList>();
     f->SetFromValue(args[0], err);
     if (!err->has_error())
       scope->set_sources_assignment_filter(std::move(f));
@@ -849,6 +854,13 @@ const char kPool_Help[] =
   As the file containing the pool definition may be executed in the
   context of more than one toolchain it is recommended to specify an
   explicit toolchain when defining and referencing a pool.
+
+  A pool named "console" defined in the root build file represents Ninja's
+  console pool. Targets using this pool will have access to the console's
+  stdin and stdout, and output will not be buffered. This special pool must
+  have a depth of 1. Pools not defined in the root must not be named "console".
+  The console pool can only be defined for the default toolchain.
+  Refer to the Ninja documentation on the console pool for more info.
 
   A pool is referenced by its label just like a target.
 
@@ -904,13 +916,31 @@ Value RunPool(const FunctionCallNode* function,
     return Value();
 
   if (depth->int_value() < 0) {
-    *err = Err(function, "depth must be positive or nul.");
+    *err = Err(*depth, "depth must be positive or 0.");
     return Value();
   }
 
   // Create the new pool.
-  std::unique_ptr<Pool> pool(
-      new Pool(scope->settings(), label, scope->input_files()));
+  std::unique_ptr<Pool> pool = std::make_unique<Pool>(
+      scope->settings(), label, scope->build_dependency_files());
+
+  if (label.name() == "console") {
+    const Settings* settings = scope->settings();
+    if (!settings->is_default()) {
+      *err = Err(
+          function,
+          "\"console\" pool must be defined only in the default toolchain.");
+      return Value();
+    }
+    if (label.dir() != settings->build_settings()->root_target_label().dir()) {
+      *err = Err(function, "\"console\" pool must be defined in the root //.");
+      return Value();
+    }
+    if (depth->int_value() != 1) {
+      *err = Err(*depth, "\"console\" pool must have depth 1.");
+      return Value();
+    }
+  }
   pool->set_depth(depth->int_value());
 
   // Save the generated item.
@@ -962,9 +992,10 @@ Value RunPrint(Scope* scope,
 
   const BuildSettings::PrintCallback& cb =
       scope->settings()->build_settings()->print_callback();
-  if (cb.is_null())
+  if (cb.is_null()) {
     printf("%s", output.c_str());
-  else
+    fflush(stdout);
+  } else
     cb.Run(output);
 
   return Value();

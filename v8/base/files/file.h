@@ -18,15 +18,16 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
 #include <sys/stat.h>
 #endif
 
 namespace base {
 
-#if defined(OS_BSD) || defined(OS_MACOSX) || defined(OS_NACL)
+#if defined(OS_BSD) || defined(OS_MACOSX) || defined(OS_NACL) || \
+    defined(OS_ANDROID) && __ANDROID_API__ < 21
 typedef struct stat stat_wrapper_t;
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
 typedef struct stat64 stat_wrapper_t;
 #endif
 
@@ -77,9 +78,9 @@ class BASE_EXPORT File {
                                          // See DeleteOnClose() for details.
   };
 
-  // This enum has been recorded in multiple histograms. If the order of the
-  // fields needs to change, please ensure that those histograms are obsolete or
-  // have been moved to a different enum.
+  // This enum has been recorded in multiple histograms using PlatformFileError
+  // enum. If the order of the fields needs to change, please ensure that those
+  // histograms are obsolete or have been moved to a different enum.
   //
   // FILE_ERROR_ACCESS_DENIED is returned when a call fails because of a
   // filesystem restriction. FILE_ERROR_SECURITY is returned when a browser
@@ -121,7 +122,7 @@ class BASE_EXPORT File {
   struct BASE_EXPORT Info {
     Info();
     ~Info();
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
     // Fills this struct with values from |stat_info|.
     void FromStat(const stat_wrapper_t& stat_info);
 #endif
@@ -220,7 +221,7 @@ class BASE_EXPORT File {
   // Writes the given buffer into the file at the given offset, overwritting any
   // data that was previously there. Returns the number of bytes written, or -1
   // on error. Note that this function makes a best effort to write all data on
-  // all platforms.
+  // all platforms. |data| can be nullptr when |size| is 0.
   // Ignores the offset and writes to the end of the file if the file was opened
   // with FLAG_APPEND.
   int Write(int64_t offset, const char* data, int size);
@@ -330,9 +331,15 @@ class BASE_EXPORT File {
 
 #if defined(OS_WIN)
   static Error OSErrorToFileError(DWORD last_error);
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   static Error OSErrorToFileError(int saved_errno);
 #endif
+
+  // Gets the last global error (errno or GetLastError()) and converts it to the
+  // closest base::File::Error equivalent via OSErrorToFileError(). The returned
+  // value is only trustworthy immediately after another base::File method
+  // fails. base::File never resets the global error to zero.
+  static Error GetLastFileError();
 
   // Converts an error value to a human-readable form. Used for logging.
   static std::string ErrorToString(Error error);

@@ -11,11 +11,10 @@ so you may need approval from both an OWNER and a reviewer in many cases.
 
 The syntax of the OWNERS file is, roughly:
 
-lines     := (\s* line? \s* "\n")*
+lines     := (\s* line? \s* comment? \s* "\n")*
 
 line      := directive
           | "per-file" \s+ glob \s* "=" \s* directive
-          | comment
 
 directive := "set noparent"
           |  "file:" glob
@@ -55,6 +54,7 @@ Examples for all of these combinations can be found in tests/owners_unittest.py.
 """
 
 import collections
+import fnmatch
 import random
 import re
 
@@ -67,10 +67,15 @@ EVERYONE = '*'
 BASIC_EMAIL_REGEXP = r'^[\w\-\+\%\.]+\@[\w\-\+\%\.]+$'
 
 
+# Key for global comments per email address. Should be unlikely to be a
+# pathname.
+GLOBAL_STATUS = '*'
+
+
 def _assert_is_collection(obj):
   assert not isinstance(obj, basestring)
   # Module 'collections' has no 'Iterable' member
-  # pylint: disable=E1101
+  # pylint: disable=no-member
   if hasattr(collections, 'Iterable') and hasattr(collections, 'Sized'):
     assert (isinstance(obj, collections.Iterable) and
             isinstance(obj, collections.Sized))
@@ -94,38 +99,51 @@ class Database(object):
   of changed files, and see if a list of changed files is covered by a
   list of reviewers."""
 
-  def __init__(self, root, fopen, os_path, glob):
+  def __init__(self, root, fopen, os_path):
     """Args:
       root: the path to the root of the Repository
       open: function callback to open a text file for reading
       os_path: module/object callback with fields for 'abspath', 'dirname',
-          'exists', and 'join'
-      glob: function callback to list entries in a directory match a glob
-          (i.e., glob.glob)
+          'exists', 'join', and 'relpath'
     """
     self.root = root
     self.fopen = fopen
     self.os_path = os_path
-    self.glob = glob
 
     # Pick a default email regexp to use; callers can override as desired.
     self.email_regexp = re.compile(BASIC_EMAIL_REGEXP)
 
-    # Mapping of owners to the paths they own.
-    self.owned_by = {EVERYONE: set()}
+    # Replacement contents for the given files. Maps the file name of an
+    # OWNERS file (relative to root) to an iterator returning the replacement
+    # file contents.
+    self.override_files = {}
+
+    # Mapping of owners to the paths or globs they own.
+    self._owners_to_paths = {EVERYONE: set()}
 
     # Mapping of paths to authorized owners.
-    self.owners_for = {}
+    self._paths_to_owners = {}
 
     # Mapping reviewers to the preceding comment per file in the OWNERS files.
     self.comments = {}
 
+    # Cache of compiled regexes for _fnmatch()
+    self._fnmatch_cache = {}
+
     # Set of paths that stop us from looking above them for owners.
     # (This is implicitly true for the root directory).
-    self.stop_looking = set([''])
+    self._stop_looking = set([''])
 
     # Set of files which have already been read.
     self.read_files = set()
+
+    # Set of files which were included from other files. Files are processed
+    # differently depending on whether they are regular owners files or
+    # being included from another file.
+    self._included_files = {}
+
+    # File with global status lines for owners.
+    self._status_file = None
 
   def reviewers_for(self, files, author):
     """Returns a suggested set of reviewers that will cover the files.
@@ -135,6 +153,7 @@ class Database(object):
     in order avoid suggesting the author as a reviewer for their own changes."""
     self._check_paths(files)
     self.load_data_needed_for(files)
+
     suggested_owners = self._covering_set_of_owners_for(files, author)
     if EVERYONE in suggested_owners:
       if len(suggested_owners) > 1:
@@ -154,11 +173,7 @@ class Database(object):
     self._check_reviewers(reviewers)
     self.load_data_needed_for(files)
 
-    covered_objs = self._objs_covered_by(reviewers)
-    uncovered_files = [f for f in files
-                       if not self._is_obj_covered_by(f, covered_objs)]
-
-    return set(uncovered_files)
+    return set(f for f in files if not self._is_obj_covered_by(f, reviewers))
 
   def _check_paths(self, files):
     def _is_under(f, pfx):
@@ -169,43 +184,53 @@ class Database(object):
 
   def _check_reviewers(self, reviewers):
     _assert_is_collection(reviewers)
-    assert all(self.email_regexp.match(r) for r in reviewers)
+    assert all(self.email_regexp.match(r) for r in reviewers), reviewers
 
-  def _objs_covered_by(self, reviewers):
-    objs = self.owned_by[EVERYONE]
-    for r in reviewers:
-      objs = objs | self.owned_by.get(r, set())
-    return objs
-
-  def _stop_looking(self, objname):
-    return objname in self.stop_looking
-
-  def _is_obj_covered_by(self, objname, covered_objs):
-    while not objname in covered_objs and not self._stop_looking(objname):
+  def _is_obj_covered_by(self, objname, reviewers):
+    reviewers = list(reviewers) + [EVERYONE]
+    while True:
+      for reviewer in reviewers:
+        for owned_pattern in self._owners_to_paths.get(reviewer, set()):
+          if fnmatch.fnmatch(objname, owned_pattern):
+            return True
+      if self._should_stop_looking(objname):
+        break
       objname = self.os_path.dirname(objname)
-    return objname in covered_objs
+    return False
 
-  def _enclosing_dir_with_owners(self, objname):
+  def enclosing_dir_with_owners(self, objname):
     """Returns the innermost enclosing directory that has an OWNERS file."""
     dirpath = objname
-    while not dirpath in self.owners_for:
-      if self._stop_looking(dirpath):
+    while not self._owners_for(dirpath):
+      if self._should_stop_looking(dirpath):
         break
       dirpath = self.os_path.dirname(dirpath)
     return dirpath
 
   def load_data_needed_for(self, files):
+    self._read_global_comments()
     for f in files:
       dirpath = self.os_path.dirname(f)
-      while not dirpath in self.owners_for:
+      while not self._owners_for(dirpath):
         self._read_owners(self.os_path.join(dirpath, 'OWNERS'))
-        if self._stop_looking(dirpath):
+        if self._should_stop_looking(dirpath):
           break
         dirpath = self.os_path.dirname(dirpath)
 
+  def _should_stop_looking(self, objname):
+    return any(self._fnmatch(objname, stop_looking)
+               for stop_looking in self._stop_looking)
+
+  def _owners_for(self, objname):
+    obj_owners = set()
+    for owned_path, path_owners in self._paths_to_owners.iteritems():
+      if self._fnmatch(objname, owned_path):
+        obj_owners |= path_owners
+    return obj_owners
+
   def _read_owners(self, path):
     owners_path = self.os_path.join(self.root, path)
-    if not self.os_path.exists(owners_path):
+    if not (self.os_path.exists(owners_path) or (path in self.override_files)):
       return
 
     if owners_path in self.read_files:
@@ -213,25 +238,52 @@ class Database(object):
 
     self.read_files.add(owners_path)
 
+    is_toplevel = path == 'OWNERS'
+
     comment = []
     dirpath = self.os_path.dirname(path)
     in_comment = False
+    # We treat the beginning of the file as an blank line.
+    previous_line_was_blank = True
+    reset_comment_after_use = False
     lineno = 0
-    for line in self.fopen(owners_path):
+
+    if path in self.override_files:
+      file_iter = self.override_files[path]
+    else:
+      file_iter = self.fopen(owners_path)
+
+    for line in file_iter:
       lineno += 1
       line = line.strip()
       if line.startswith('#'):
+        if is_toplevel:
+          m = re.match('#\s*OWNERS_STATUS\s+=\s+(.+)$', line)
+          if m:
+            self._status_file = m.group(1).strip()
+            continue
         if not in_comment:
           comment = []
+          reset_comment_after_use = not previous_line_was_blank
         comment.append(line[1:].strip())
         in_comment = True
         continue
-      if line == '':
-        continue
       in_comment = False
 
+      if line == '':
+        comment = []
+        previous_line_was_blank = True
+        continue
+
+      # If the line ends with a comment, strip the comment and store it for this
+      # line only.
+      line, _, line_comment = line.partition('#')
+      line = line.strip()
+      line_comment = [line_comment.strip()] if line_comment else []
+
+      previous_line_was_blank = False
       if line == 'set noparent':
-        self.stop_looking.add(dirpath)
+        self._stop_looking.add(dirpath)
         continue
 
       m = re.match('per-file (.+)=(.+)', line)
@@ -243,57 +295,97 @@ class Database(object):
           raise SyntaxErrorInOwnersFile(owners_path, lineno,
               'per-file globs cannot span directories or use escapes: "%s"' %
               line)
-        baselines = self.glob(full_glob_string)
-        for baseline in (self.os_path.relpath(b, self.root) for b in baselines):
-          self._add_entry(baseline, directive, 'per-file line',
-                          owners_path, lineno, '\n'.join(comment))
+        relative_glob_string = self.os_path.relpath(full_glob_string, self.root)
+        self._add_entry(relative_glob_string, directive, owners_path,
+                        lineno, '\n'.join(comment + line_comment))
+        if reset_comment_after_use:
+          comment = []
         continue
 
       if line.startswith('set '):
         raise SyntaxErrorInOwnersFile(owners_path, lineno,
             'unknown option: "%s"' % line[4:].strip())
 
-      self._add_entry(dirpath, line, 'line', owners_path, lineno,
-                      ' '.join(comment))
+      self._add_entry(dirpath, line, owners_path, lineno,
+                      ' '.join(comment + line_comment))
+      if reset_comment_after_use:
+        comment = []
 
-  def _add_entry(self, path, directive,
-                 line_type, owners_path, lineno, comment):
+  def _read_global_comments(self):
+    if not self._status_file:
+      if not 'OWNERS' in self.read_files:
+        self._read_owners('OWNERS')
+      if not self._status_file:
+        return
+
+    owners_status_path = self.os_path.join(self.root, self._status_file)
+    if not self.os_path.exists(owners_status_path):
+      raise IOError('Could not find global status file "%s"' %
+                    owners_status_path)
+
+    if owners_status_path in self.read_files:
+      return
+
+    self.read_files.add(owners_status_path)
+
+    lineno = 0
+    for line in self.fopen(owners_status_path):
+      lineno += 1
+      line = line.strip()
+      if line.startswith('#'):
+        continue
+      if line == '':
+        continue
+
+      m = re.match('(.+?):(.+)', line)
+      if m:
+        owner = m.group(1).strip()
+        comment = m.group(2).strip()
+        if not self.email_regexp.match(owner):
+          raise SyntaxErrorInOwnersFile(owners_status_path, lineno,
+              'invalid email address: "%s"' % owner)
+
+        self.comments.setdefault(owner, {})
+        self.comments[owner][GLOBAL_STATUS] = comment
+        continue
+
+      raise SyntaxErrorInOwnersFile(owners_status_path, lineno,
+          'cannot parse status entry: "%s"' % line.strip())
+
+  def _add_entry(self, owned_paths, directive, owners_path, lineno, comment):
     if directive == 'set noparent':
-      self.stop_looking.add(path)
+      self._stop_looking.add(owned_paths)
     elif directive.startswith('file:'):
-      owners_file = self._resolve_include(directive[5:], owners_path)
-      if not owners_file:
+      include_file = self._resolve_include(directive[5:], owners_path)
+      if not include_file:
         raise SyntaxErrorInOwnersFile(owners_path, lineno,
             ('%s does not refer to an existing file.' % directive[5:]))
 
-      self._read_owners(owners_file)
-
-      dirpath = self.os_path.dirname(owners_file)
-      for key in self.owned_by:
-        if not dirpath in self.owned_by[key]:
-          continue
-        self.owned_by[key].add(path)
-
-      if dirpath in self.owners_for:
-        self.owners_for.setdefault(path, set()).update(self.owners_for[dirpath])
-
+      included_owners = self._read_just_the_owners(include_file)
+      for owner in included_owners:
+        self._owners_to_paths.setdefault(owner, set()).add(owned_paths)
+        self._paths_to_owners.setdefault(owned_paths, set()).add(owner)
     elif self.email_regexp.match(directive) or directive == EVERYONE:
-      self.comments.setdefault(directive, {})
-      self.comments[directive][path] = comment
-      self.owned_by.setdefault(directive, set()).add(path)
-      self.owners_for.setdefault(path, set()).add(directive)
+      if comment:
+        self.comments.setdefault(directive, {})
+        self.comments[directive][owned_paths] = comment
+      self._owners_to_paths.setdefault(directive, set()).add(owned_paths)
+      self._paths_to_owners.setdefault(owned_paths, set()).add(directive)
     else:
       raise SyntaxErrorInOwnersFile(owners_path, lineno,
-          ('%s is not a "set" directive, file include, "*", '
-           'or an email address: "%s"' % (line_type, directive)))
+          ('"%s" is not a "set noparent", file include, "*", '
+           'or an email address.' % (directive,)))
 
   def _resolve_include(self, path, start):
     if path.startswith('//'):
       include_path = path[2:]
     else:
       assert start.startswith(self.root)
-      start = self.os_path.dirname(start[len(self.root):])
+      start = self.os_path.dirname(self.os_path.relpath(start, self.root))
       include_path = self.os_path.join(start, path)
+
+    if include_path in self.override_files:
+      return include_path
 
     owners_path = self.os_path.join(self.root, include_path)
     if not self.os_path.exists(owners_path):
@@ -301,27 +393,71 @@ class Database(object):
 
     return include_path
 
+  def _read_just_the_owners(self, include_file):
+    if include_file in self._included_files:
+      return self._included_files[include_file]
+
+    owners = set()
+    self._included_files[include_file] = owners
+    lineno = 0
+    if include_file in self.override_files:
+      file_iter = self.override_files[include_file]
+    else:
+      file_iter = self.fopen(self.os_path.join(self.root, include_file))
+    for line in file_iter:
+      lineno += 1
+      line = line.strip()
+      if (line.startswith('#') or line == '' or
+              line.startswith('set noparent') or
+              line.startswith('per-file')):
+        continue
+
+      if self.email_regexp.match(line) or line == EVERYONE:
+        owners.add(line)
+        continue
+      if line.startswith('file:'):
+        sub_include_file = self._resolve_include(line[5:], include_file)
+        sub_owners = self._read_just_the_owners(sub_include_file)
+        owners.update(sub_owners)
+        continue
+
+      raise SyntaxErrorInOwnersFile(include_file, lineno,
+          ('"%s" is not a "set noparent", file include, "*", '
+           'or an email address.' % (line,)))
+    return owners
+
   def _covering_set_of_owners_for(self, files, author):
-    dirs_remaining = set(self._enclosing_dir_with_owners(f) for f in files)
+    dirs_remaining = set(self.enclosing_dir_with_owners(f) for f in files)
     all_possible_owners = self.all_possible_owners(dirs_remaining, author)
     suggested_owners = set()
-    while dirs_remaining:
+    while dirs_remaining and all_possible_owners:
       owner = self.lowest_cost_owner(all_possible_owners, dirs_remaining)
       suggested_owners.add(owner)
       dirs_to_remove = set(el[0] for el in all_possible_owners[owner])
       dirs_remaining -= dirs_to_remove
+      # Now that we've used `owner` and covered all their dirs, remove them
+      # from consideration.
+      del all_possible_owners[owner]
+      for o, dirs in all_possible_owners.items():
+        new_dirs = [(d, dist) for (d, dist) in dirs if d not in dirs_to_remove]
+        if not new_dirs:
+          del all_possible_owners[o]
+        else:
+          all_possible_owners[o] = new_dirs
     return suggested_owners
 
   def all_possible_owners(self, dirs, author):
-    """Returns a list of (potential owner, distance-from-dir) tuples; a
-    distance of 1 is the lowest/closest possible distance (which makes the
-    subsequent math easier)."""
+    """Returns a dict of {potential owner: (dir, distance)} mappings.
+
+    A distance of 1 is the lowest/closest possible distance (which makes the
+    subsequent math easier).
+    """
     all_possible_owners = {}
     for current_dir in dirs:
       dirname = current_dir
       distance = 1
       while True:
-        for owner in self.owners_for.get(dirname, []):
+        for owner in self._owners_for(dirname):
           if author and owner == author:
             continue
           all_possible_owners.setdefault(owner, [])
@@ -329,11 +465,19 @@ class Database(object):
           # directory, only count the closest one.
           if not any(current_dir == el[0] for el in all_possible_owners[owner]):
             all_possible_owners[owner].append((current_dir, distance))
-        if self._stop_looking(dirname):
+        if self._should_stop_looking(dirname):
           break
         dirname = self.os_path.dirname(dirname)
         distance += 1
     return all_possible_owners
+
+  def _fnmatch(self, filename, pattern):
+    """Same as fnmatch.fnmatch(), but interally caches the compiled regexes."""
+    matcher = self._fnmatch_cache.get(pattern)
+    if matcher is None:
+      matcher = re.compile(fnmatch.translate(pattern)).match
+      self._fnmatch_cache[pattern] = matcher
+    return matcher(filename)
 
   @staticmethod
   def total_costs_by_owner(all_possible_owners, dirs):

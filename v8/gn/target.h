@@ -55,9 +55,11 @@ class Target : public Item {
   typedef std::vector<SourceFile> FileList;
   typedef std::vector<std::string> StringVector;
 
+  // We track the set of build files that may affect this target, please refer
+  // to Scope for how this is determined.
   Target(const Settings* settings,
          const Label& label,
-         const InputFileSet& input_files);
+         const std::set<SourceFile>& build_dependency_files = {});
   ~Target() override;
 
   // Returns a string naming the output type.
@@ -154,10 +156,6 @@ class Target : public Item {
     write_runtime_deps_output_ = value;
   }
 
-  // Compile-time extra dependencies.
-  const FileList& inputs() const { return inputs_; }
-  FileList& inputs() { return inputs_; }
-
   // Runtime dependencies. These are "file-like things" that can either be
   // directories or files. They do not need to exist, these are just passed as
   // runtime dependencies to external test systems as necessary.
@@ -172,10 +170,9 @@ class Target : public Item {
   // Returns true if targets depending on this one should have an order
   // dependency.
   bool hard_dep() const {
-    return output_type_ == ACTION ||
-           output_type_ == ACTION_FOREACH ||
-           output_type_ == COPY_FILES ||
-           output_type_ == CREATE_BUNDLE;
+    return output_type_ == ACTION || output_type_ == ACTION_FOREACH ||
+           output_type_ == COPY_FILES || output_type_ == CREATE_BUNDLE ||
+           output_type_ == BUNDLE_DATA;
   }
 
   // Returns the iterator range which can be used in range-based for loops
@@ -245,9 +242,10 @@ class Target : public Item {
     return recursive_hard_deps_;
   }
 
-  std::vector<LabelPattern>& assert_no_deps() {
-    return assert_no_deps_;
-  }
+  std::vector<LabelPattern>& friends() { return friends_; }
+  const std::vector<LabelPattern>& friends() const { return friends_; }
+
+  std::vector<LabelPattern>& assert_no_deps() { return assert_no_deps_; }
   const std::vector<LabelPattern>& assert_no_deps() const {
     return assert_no_deps_;
   }
@@ -311,7 +309,7 @@ class Target : public Item {
                                std::vector<OutputFile>* outputs) const;
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(Target, ResolvePrecompiledHeaders);
+  FRIEND_TEST_ALL_PREFIXES(TargetTest, ResolvePrecompiledHeaders);
 
   // Pulls necessary information from dependencies to this one when all
   // dependencies have been resolved.
@@ -348,7 +346,6 @@ class Target : public Item {
   bool check_includes_;
   bool complete_static_lib_;
   bool testonly_;
-  FileList inputs_;
   std::vector<std::string> data_;
   BundleData bundle_data_;
   OutputFile write_runtime_deps_output_;
@@ -377,11 +374,12 @@ class Target : public Item {
   // target is marked resolved. This will not include the current target.
   std::set<const Target*> recursive_hard_deps_;
 
+  std::vector<LabelPattern> friends_;
   std::vector<LabelPattern> assert_no_deps_;
 
-  // Used for all binary targets. The precompiled header values in this struct
-  // will be resolved to the ones to use for this target, if precompiled
-  // headers are used.
+  // Used for all binary targets, and for inputs in regular targets. The
+  // precompiled header values in this struct will be resolved to the ones to
+  // use for this target, if precompiled headers are used.
   ConfigValues config_values_;
 
   // Used for action[_foreach] targets.

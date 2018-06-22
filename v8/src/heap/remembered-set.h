@@ -196,7 +196,7 @@ class RememberedSet : public AllStatic {
     if (slot_set == nullptr) {
       slot_set = page->AllocateTypedSlotSet<type>();
     }
-    if (host_addr == nullptr) {
+    if (host_addr == kNullAddress) {
       host_addr = page->address();
     }
     uintptr_t offset = slot_addr - page->address();
@@ -282,7 +282,7 @@ class UpdateTypedSlotHelper {
     Object* old_code = code;
     SlotCallbackResult result =
         callback(reinterpret_cast<MaybeObject**>(&code));
-    DCHECK(!Internals::HasWeakHeapObjectTag(code));
+    DCHECK(!HasWeakHeapObjectTag(code));
     if (code != old_code) {
       Memory::Address_at(entry_address) =
           reinterpret_cast<Code*>(code)->entry();
@@ -300,9 +300,10 @@ class UpdateTypedSlotHelper {
     Object* new_target = old_target;
     SlotCallbackResult result =
         callback(reinterpret_cast<MaybeObject**>(&new_target));
-    DCHECK(!Internals::HasWeakHeapObjectTag(new_target));
+    DCHECK(!HasWeakHeapObjectTag(new_target));
     if (new_target != old_target) {
-      rinfo->set_target_address(Code::cast(new_target)->instruction_start());
+      rinfo->set_target_address(
+          Code::cast(new_target)->raw_instruction_start());
     }
     return result;
   }
@@ -317,7 +318,7 @@ class UpdateTypedSlotHelper {
     Object* new_target = old_target;
     SlotCallbackResult result =
         callback(reinterpret_cast<MaybeObject**>(&new_target));
-    DCHECK(!Internals::HasWeakHeapObjectTag(new_target));
+    DCHECK(!HasWeakHeapObjectTag(new_target));
     if (new_target != old_target) {
       rinfo->set_target_object(HeapObject::cast(new_target));
     }
@@ -327,8 +328,7 @@ class UpdateTypedSlotHelper {
   // Updates a typed slot using an untyped slot callback.
   // The callback accepts MaybeObject** and returns SlotCallbackResult.
   template <typename Callback>
-  static SlotCallbackResult UpdateTypedSlot(Isolate* isolate,
-                                            SlotType slot_type, Address addr,
+  static SlotCallbackResult UpdateTypedSlot(SlotType slot_type, Address addr,
                                             Callback callback) {
     switch (slot_type) {
       case CODE_TARGET_SLOT: {

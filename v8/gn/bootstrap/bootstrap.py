@@ -20,6 +20,7 @@ import errno
 import logging
 import optparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -38,11 +39,12 @@ is_posix = is_linux or is_mac or is_aix
 def check_call(cmd, **kwargs):
   logging.debug('Running: %s', ' '.join(cmd))
 
-  # With shell=False, subprocess expects an executable on Windows
-  if is_win and cmd and cmd[0].endswith('.py'):
-    cmd.insert(0, sys.executable)
-
   subprocess.check_call(cmd, cwd=GN_ROOT, **kwargs)
+
+def check_output(cmd, cwd=GN_ROOT, **kwargs):
+  logging.debug('Running: %s', ' '.join(cmd))
+
+  return subprocess.check_output(cmd, cwd=cwd, **kwargs)
 
 def mkdir_p(path):
   try:
@@ -62,14 +64,21 @@ def scoped_tempdir():
 
 
 def run_build(tempdir, options):
-  if options.debug:
+  if options.build_path:
+    build_rel = options.build_path
+  elif options.debug:
     build_rel = os.path.join('out', 'Debug')
   else:
     build_rel = os.path.join('out', 'Release')
   build_root = os.path.join(SRC_ROOT, build_rel)
 
+  windows_x64_toolchain = None
+  if is_win:
+    windows_x64_toolchain = windows_prepare_toolchain(tempdir)
+    os.environ["PATH"] = windows_x64_toolchain["paths"]
+
   print 'Building gn manually in a temporary directory for bootstrapping...'
-  build_gn_with_ninja_manually(tempdir, options)
+  build_gn_with_ninja_manually(tempdir, options, windows_x64_toolchain)
   temp_gn = os.path.join(tempdir, 'gn')
   out_gn = os.path.join(build_root, 'gn')
 
@@ -88,6 +97,46 @@ def run_build(tempdir, options):
     # Preserve the executable permission bit.
     shutil.copy2(out_gn, options.output)
 
+def windows_target_build_arch():
+    # Target build architecture set by vcvarsall.bat
+    target_arch = os.environ.get('Platform')
+    if target_arch in ['x64', 'x86']: return target_arch
+
+    if platform.machine().lower() in ['x86_64', 'amd64']: return 'x64'
+    return 'x86'
+
+def windows_prepare_toolchain(tempdir):
+
+  def CallPythonScopeScript(command, **kwargs):
+    response = check_output(command, **kwargs)
+
+    _globals = {"__builtins__":None}
+    _locals = {}
+    exec(response, _globals, _locals)
+
+    return _locals
+
+  toolchain_paths = CallPythonScopeScript(
+      [sys.executable,
+       os.path.join(SRC_ROOT, "build", "vs_toolchain.py"),
+      "get_toolchain_dir"],
+      cwd=tempdir)
+
+  windows_x64_toolchain =  CallPythonScopeScript(
+      [sys.executable,
+       os.path.join(SRC_ROOT, "build", "toolchain",
+                    "win", "setup_toolchain.py"),
+       toolchain_paths["vs_path"],
+       toolchain_paths["sdk_path"],
+       toolchain_paths["runtime_dirs"],
+       "win",
+       "x64",
+       "environment.x64",
+       "true"
+      ],
+      cwd=tempdir)
+
+  return windows_x64_toolchain
 
 def main(argv):
   parser = optparse.OptionParser(description=sys.modules[__name__].__doc__)
@@ -101,6 +150,10 @@ def main(argv):
                     help='Re-used build directory instead of using new '
                          'temporary location each time')
   parser.add_option('--gn-gen-args', help='Args to pass to gn gen --args')
+  parser.add_option('--build-path', help='The directory in which to build gn, '
+                    'relative to the src directory. (eg. out/Release)'
+                    'In the no-clean mode an absolute path will also force '
+                    'the out_bootstrap to be located in the parent directory')
   parser.add_option('-v', '--verbose', action='store_true',
                     help='Log more details')
   options, args = parser.parse_args(argv)
@@ -112,7 +165,10 @@ def main(argv):
 
   try:
     if options.no_clean:
-      build_dir = os.path.join(SRC_ROOT, 'out_bootstrap')
+      out_bootstrap_dir = SRC_ROOT
+      if options.build_path and os.path.isabs(options.build_path):
+        out_bootstrap_dir = os.path.dirname(options.build_path)
+      build_dir = os.path.join(out_bootstrap_dir, 'out_bootstrap')
       if not os.path.exists(build_dir):
         os.makedirs(build_dir)
       return run_build(build_dir, options)
@@ -147,6 +203,7 @@ def write_buildflag_header_manually(root_gen_dir, header, flags):
       f.write(' ' + name + '=' + value)
 
   check_call([
+      sys.executable,
       os.path.join(SRC_ROOT, 'build', 'write_buildflag_header.py'),
       '--output', header,
       '--gen-dir', root_gen_dir,
@@ -157,22 +214,44 @@ def write_buildflag_header_manually(root_gen_dir, header, flags):
 
 def write_build_date_header(root_gen_dir):
   check_call([
+       sys.executable,
        os.path.join(SRC_ROOT, 'build', 'write_build_date_header.py'),
        os.path.join(root_gen_dir, 'base/generated_build_date.h'),
        'default',
   ])
 
-def build_gn_with_ninja_manually(tempdir, options):
+def build_gn_with_ninja_manually(tempdir, options, windows_x64_toolchain):
   root_gen_dir = os.path.join(tempdir, 'gen')
   mkdir_p(root_gen_dir)
 
-  write_buildflag_header_manually(root_gen_dir, 'base/allocator/features.h',
+  write_buildflag_header_manually(
+      root_gen_dir,
+      'base/synchronization/synchronization_buildflags.h',
+      {'ENABLE_MUTEX_PRIORITY_INHERITANCE': 'false'})
+
+  write_buildflag_header_manually(root_gen_dir, 'base/allocator/buildflags.h',
       {'USE_ALLOCATOR_SHIM': 'true' if is_linux else 'false'})
 
-  write_buildflag_header_manually(root_gen_dir, 'base/debug/debugging_flags.h',
+  write_buildflag_header_manually(root_gen_dir,
+                                  'base/debug/debugging_buildflags.h',
       {
+          'ENABLE_LOCATION_SOURCE': 'false',
           'ENABLE_PROFILING': 'false',
-          'CAN_UNWIND_WITH_FRAME_POINTERS': 'false'
+          'CAN_UNWIND_WITH_FRAME_POINTERS': 'false',
+          'UNSAFE_DEVELOPER_BUILD': 'false',
+          'CAN_UNWIND_WITH_CFI_TABLE': 'false',
+      })
+
+  write_buildflag_header_manually(root_gen_dir,
+                                  'base/memory/protected_memory_buildflags.h',
+                                  { 'USE_LLD': 'false' })
+
+  write_buildflag_header_manually(root_gen_dir, 'base/cfi_buildflags.h',
+      {
+          'CFI_CAST_CHECK': 'false',
+          'CFI_ICALL_CHECK': 'false',
+          'CFI_ENFORCEMENT_TRAP': 'false',
+          'CFI_ENFORCEMENT_DIAGNOSTIC': 'false'
       })
 
   write_build_date_header(root_gen_dir)
@@ -182,21 +261,27 @@ def build_gn_with_ninja_manually(tempdir, options):
     # and this file is only included for Mac builds.
     mkdir_p(os.path.join(root_gen_dir, 'base'))
     check_call([
+        sys.executable,
         os.path.join(SRC_ROOT, 'build', 'write_build_date_header.py'),
         os.path.join(root_gen_dir, 'base', 'generated_build_date.h'),
         'default'
     ])
 
   if is_win:
-    write_buildflag_header_manually(root_gen_dir, 'base/win/base_features.h',
+    write_buildflag_header_manually(root_gen_dir,
+                                    'base/win/base_win_buildflags.h',
         {'SINGLE_MODULE_MODE_HANDLE_VERIFIER': 'true'})
 
     write_compiled_message(root_gen_dir,
         'base/trace_event/etw_manifest/chrome_events_win.man')
 
+  write_buildflag_header_manually(
+      root_gen_dir, 'base/android/library_loader.h',
+      {'USE_LLD': 'false', 'SUPPORTS_CODE_ORDERING': 'false'})
+
   write_gn_ninja(os.path.join(tempdir, 'build.ninja'),
-                 root_gen_dir, options)
-  cmd = ['ninja', '-C', tempdir]
+                 root_gen_dir, options, windows_x64_toolchain)
+  cmd = ['ninja', '-C', tempdir, '-w', 'dupbuild=err']
   if options.verbose:
     cmd.append('-v')
 
@@ -294,12 +379,14 @@ def write_generic_ninja(path, static_libraries, executables,
     f.write(ninja_template)
     f.write('\n'.join(ninja_lines))
 
-def write_gn_ninja(path, root_gen_dir, options):
+def write_gn_ninja(path, root_gen_dir, options, windows_x64_toolchain):
   if is_win:
-    cc = os.environ.get('CC', 'cl.exe')
-    cxx = os.environ.get('CXX', 'cl.exe')
-    ld = os.environ.get('LD', 'link.exe')
-    ar = os.environ.get('AR', 'lib.exe')
+    CCPATH = windows_x64_toolchain["vc_bin_dir"]
+
+    cc = os.environ.get('CC', os.path.join(CCPATH, 'cl.exe'))
+    cxx = os.environ.get('CXX', os.path.join(CCPATH, 'cl.exe'))
+    ld = os.environ.get('LD', os.path.join(CCPATH, 'link.exe'))
+    ar = os.environ.get('AR', os.path.join(CCPATH, 'lib.exe'))
   elif is_aix:
     cc = os.environ.get('CC', 'gcc')
     cxx = os.environ.get('CXX', 'c++')
@@ -340,7 +427,7 @@ def write_gn_ninja(path, root_gen_dir, options):
         '-pipe',
         '-fno-exceptions'
     ])
-    cflags_cc.extend(['-std=c++11', '-Wno-c++11-narrowing'])
+    cflags_cc.extend(['-std=c++14', '-Wno-c++11-narrowing'])
     if is_aix:
      cflags.extend(['-maix64'])
      ldflags.extend([ '-maix64 -Wl,-bbigtoc' ])
@@ -363,8 +450,12 @@ def write_gn_ninja(path, root_gen_dir, options):
         '/GR-',
         '/D_HAS_EXCEPTIONS=0',
     ])
-    # TODO(tim): Support for 64bit builds?
-    ldflags.extend(['/MACHINE:x86', '/DEBUG'])
+
+    target_arch = windows_target_build_arch()
+    if target_arch == 'x64':
+        ldflags.extend(['/MACHINE:x64'])
+    else:
+        ldflags.extend(['/MACHINE:x86'])
 
   static_libraries = {
       'base': {'sources': [], 'tool': 'cxx', 'include_dirs': []},
@@ -383,6 +474,8 @@ def write_gn_ninja(path, root_gen_dir, options):
     if name.endswith('_unittest.cc'):
       continue
     if name == 'run_all_unittests.cc':
+      continue
+    if name == 'test_with_scheduler.cc':
       continue
     if name == 'gn_main.cc':
       continue
@@ -428,23 +521,30 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/json/json_string_value_serializer.cc',
       'base/json/json_writer.cc',
       'base/json/string_escape.cc',
-      'base/lazy_instance.cc',
+      'base/lazy_instance_helpers.cc',
       'base/location.cc',
       'base/logging.cc',
       'base/md5.cc',
+      'base/memory/platform_shared_memory_region.cc',
+      'base/memory/read_only_shared_memory_region.cc',
       'base/memory/ref_counted.cc',
       'base/memory/ref_counted_memory.cc',
-      'base/memory/singleton.cc',
+      'base/memory/shared_memory_mapping.cc',
       'base/memory/shared_memory_handle.cc',
+      'base/memory/shared_memory_tracker.cc',
       'base/memory/weak_ptr.cc',
       'base/message_loop/incoming_task_queue.cc',
       'base/message_loop/message_loop.cc',
+      'base/message_loop/message_loop_current.cc',
       'base/message_loop/message_loop_task_runner.cc',
       'base/message_loop/message_pump.cc',
       'base/message_loop/message_pump_default.cc',
+      'base/message_loop/watchable_io_message_pump_posix.cc',
       'base/metrics/bucket_ranges.cc',
+      'base/metrics/dummy_histogram.cc',
       'base/metrics/field_trial.cc',
       'base/metrics/field_trial_param_associator.cc',
+      'base/metrics/field_trial_params.cc',
       'base/metrics/histogram.cc',
       'base/metrics/histogram_base.cc',
       'base/metrics/histogram_functions.cc',
@@ -458,6 +558,7 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/metrics/sample_vector.cc',
       'base/metrics/sparse_histogram.cc',
       'base/metrics/statistics_recorder.cc',
+      'base/observer_list_threadsafe.cc',
       'base/path_service.cc',
       'base/pending_task.cc',
       'base/pickle.cc',
@@ -466,8 +567,6 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/process/process_handle.cc',
       'base/process/process_iterator.cc',
       'base/process/process_metrics.cc',
-      'base/profiler/scoped_profile.cc',
-      'base/profiler/scoped_tracker.cc',
       'base/rand_util.cc',
       'base/run_loop.cc',
       'base/sequence_token.cc',
@@ -494,12 +593,14 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/task_scheduler/scheduler_lock_impl.cc',
       'base/task_scheduler/scheduler_single_thread_task_runner_manager.cc',
       'base/task_scheduler/scheduler_worker.cc',
+      'base/task_scheduler/scheduler_worker_pool.cc',
       'base/task_scheduler/scheduler_worker_pool_impl.cc',
       'base/task_scheduler/scheduler_worker_pool_params.cc',
       'base/task_scheduler/scheduler_worker_stack.cc',
       'base/task_scheduler/scoped_set_task_priority_for_current_thread.cc',
       'base/task_scheduler/sequence.cc',
       'base/task_scheduler/sequence_sort_key.cc',
+      'base/task_scheduler/service_thread.cc',
       'base/task_scheduler/task.cc',
       'base/task_scheduler/task_scheduler.cc',
       'base/task_scheduler/task_scheduler_impl.cc',
@@ -510,9 +611,9 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/third_party/icu/icu_utf.cc',
       'base/third_party/nspr/prtime.cc',
       'base/threading/post_task_and_reply_impl.cc',
+      'base/threading/scoped_blocking_call.cc',
       'base/threading/sequence_local_storage_map.cc',
       'base/threading/sequenced_task_runner_handle.cc',
-      'base/threading/sequenced_worker_pool.cc',
       'base/threading/simple_thread.cc',
       'base/threading/thread.cc',
       'base/threading/thread_checker_impl.cc',
@@ -521,7 +622,6 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/threading/thread_local_storage.cc',
       'base/threading/thread_restrictions.cc',
       'base/threading/thread_task_runner_handle.cc',
-      'base/threading/worker_pool.cc',
       'base/time/clock.cc',
       'base/time/default_clock.cc',
       'base/time/default_tick_clock.cc',
@@ -533,12 +633,7 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/trace_event/event_name_filter.cc',
       'base/trace_event/heap_profiler_allocation_context.cc',
       'base/trace_event/heap_profiler_allocation_context_tracker.cc',
-      'base/trace_event/heap_profiler_allocation_register.cc',
       'base/trace_event/heap_profiler_event_filter.cc',
-      'base/trace_event/heap_profiler_heap_dump_writer.cc',
-      'base/trace_event/heap_profiler_serialization_state.cc',
-      'base/trace_event/heap_profiler_stack_frame_deduplicator.cc',
-      'base/trace_event/heap_profiler_type_name_deduplicator.cc',
       'base/trace_event/malloc_dump_provider.cc',
       'base/trace_event/memory_allocator_dump.cc',
       'base/trace_event/memory_allocator_dump_guid.cc',
@@ -547,12 +642,8 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/trace_event/memory_dump_request_args.cc',
       'base/trace_event/memory_dump_scheduler.cc',
       'base/trace_event/memory_infra_background_whitelist.cc',
-      'base/trace_event/memory_peak_detector.cc',
       'base/trace_event/memory_usage_estimator.cc',
       'base/trace_event/process_memory_dump.cc',
-      'base/trace_event/process_memory_maps.cc',
-      'base/trace_event/process_memory_totals.cc',
-      'base/trace_event/sharded_allocation_register.cc',
       'base/trace_event/trace_buffer.cc',
       'base/trace_event/trace_config.cc',
       'base/trace_event/trace_config_category_filter.cc',
@@ -563,13 +654,24 @@ def write_gn_ninja(path, root_gen_dir, options):
       'base/trace_event/trace_log.cc',
       'base/trace_event/trace_log_constants.cc',
       'base/trace_event/tracing_agent.cc',
-      'base/tracked_objects.cc',
-      'base/tracking_info.cc',
       'base/unguessable_token.cc',
       'base/value_iterators.cc',
       'base/values.cc',
       'base/vlog.cc',
   ])
+
+  if is_win:
+    static_libraries['base']['sources'].extend([
+        'base/memory/platform_shared_memory_region_win.cc'
+    ])
+  elif is_mac:
+    static_libraries['base']['sources'].extend([
+        'base/memory/platform_shared_memory_region_mac.cc'
+    ])
+  elif is_posix:
+    static_libraries['base']['sources'].extend([
+        'base/memory/platform_shared_memory_region_posix.cc'
+    ])
 
   if is_posix:
     static_libraries['base']['sources'].extend([
@@ -594,18 +696,12 @@ def write_gn_ninja(path, root_gen_dir, options):
         'base/strings/string16.cc',
         'base/synchronization/condition_variable_posix.cc',
         'base/synchronization/lock_impl_posix.cc',
-        'base/synchronization/read_write_lock_posix.cc',
-        'base/synchronization/waitable_event_posix.cc',
         'base/sys_info_posix.cc',
         'base/task_scheduler/task_tracker_posix.cc',
         'base/threading/platform_thread_internal_posix.cc',
         'base/threading/platform_thread_posix.cc',
         'base/threading/thread_local_storage_posix.cc',
-        'base/threading/worker_pool_posix.cc',
         'base/time/time_conversion_posix.cc',
-        'base/time/time_exploded_posix.cc',
-        'base/time/time_now_posix.cc',
-        'base/trace_event/heap_profiler_allocation_register_posix.cc',
     ])
     static_libraries['libevent'] = {
         'sources': [
@@ -629,8 +725,6 @@ def write_gn_ninja(path, root_gen_dir, options):
     }
 
   if is_linux or is_aix:
-    ldflags.extend(['-pthread'])
-
     static_libraries['xdg_user_dirs'] = {
         'sources': [
             'base/third_party/xdg_user_dirs/xdg_user_dir_lookup.cc',
@@ -640,7 +734,6 @@ def write_gn_ninja(path, root_gen_dir, options):
     static_libraries['base']['sources'].extend([
         'base/memory/shared_memory_handle_posix.cc',
         'base/memory/shared_memory_posix.cc',
-        'base/memory/shared_memory_tracker.cc',
         'base/nix/xdg_util.cc',
         'base/process/internal_linux.cc',
         'base/process/memory_linux.cc',
@@ -650,10 +743,92 @@ def write_gn_ninja(path, root_gen_dir, options):
         'base/process/process_linux.cc',
         'base/process/process_metrics_linux.cc',
         'base/strings/sys_string_conversions_posix.cc',
+        'base/synchronization/waitable_event_posix.cc',
         'base/sys_info_linux.cc',
+        'base/time/time_exploded_posix.cc',
+        'base/time/time_now_posix.cc',
         'base/threading/platform_thread_linux.cc',
     ])
     if is_linux:
+      libcxx_root = SRC_ROOT + '/buildtools/third_party/libc++/trunk'
+      libcxxabi_root = SRC_ROOT + '/buildtools/third_party/libc++abi/trunk'
+      cflags_cc.extend([
+          '-nostdinc++',
+          '-isystem' + libcxx_root + '/include',
+          '-isystem' + libcxxabi_root + '/include',
+      ])
+      ldflags.extend(['-nodefaultlibs'])
+      libs.extend([
+          '-lc',
+          '-lgcc_s',
+          '-lm',
+          '-lpthread',
+      ])
+      static_libraries['libc++'] = {
+          'sources': [
+              libcxx_root + '/src/algorithm.cpp',
+              libcxx_root + '/src/any.cpp',
+              libcxx_root + '/src/bind.cpp',
+              libcxx_root + '/src/chrono.cpp',
+              libcxx_root + '/src/condition_variable.cpp',
+              libcxx_root + '/src/debug.cpp',
+              libcxx_root + '/src/exception.cpp',
+              libcxx_root + '/src/functional.cpp',
+              libcxx_root + '/src/future.cpp',
+              libcxx_root + '/src/hash.cpp',
+              libcxx_root + '/src/ios.cpp',
+              libcxx_root + '/src/iostream.cpp',
+              libcxx_root + '/src/locale.cpp',
+              libcxx_root + '/src/memory.cpp',
+              libcxx_root + '/src/mutex.cpp',
+              libcxx_root + '/src/new.cpp',
+              libcxx_root + '/src/optional.cpp',
+              libcxx_root + '/src/random.cpp',
+              libcxx_root + '/src/regex.cpp',
+              libcxx_root + '/src/shared_mutex.cpp',
+              libcxx_root + '/src/stdexcept.cpp',
+              libcxx_root + '/src/string.cpp',
+              libcxx_root + '/src/strstream.cpp',
+              libcxx_root + '/src/system_error.cpp',
+              libcxx_root + '/src/thread.cpp',
+              libcxx_root + '/src/typeinfo.cpp',
+              libcxx_root + '/src/utility.cpp',
+              libcxx_root + '/src/valarray.cpp',
+              libcxx_root + '/src/variant.cpp',
+              libcxx_root + '/src/vector.cpp',
+          ],
+          'tool': 'cxx',
+          'cflags': cflags + [
+              '-D_LIBCPP_NO_EXCEPTIONS',
+              '-D_LIBCPP_BUILDING_LIBRARY',
+              '-DLIBCXX_BUILDING_LIBCXXABI',
+          ]
+      }
+      static_libraries['libc++abi'] = {
+          'sources': [
+              libcxxabi_root + '/src/abort_message.cpp',
+              libcxxabi_root + '/src/cxa_aux_runtime.cpp',
+              libcxxabi_root + '/src/cxa_default_handlers.cpp',
+              libcxxabi_root + '/src/cxa_demangle.cpp',
+              libcxxabi_root + '/src/cxa_exception_storage.cpp',
+              libcxxabi_root + '/src/cxa_guard.cpp',
+              libcxxabi_root + '/src/cxa_handlers.cpp',
+              libcxxabi_root + '/src/cxa_noexception.cpp',
+              libcxxabi_root + '/src/cxa_unexpected.cpp',
+              libcxxabi_root + '/src/cxa_vector.cpp',
+              libcxxabi_root + '/src/cxa_virtual.cpp',
+              libcxxabi_root + '/src/fallback_malloc.cpp',
+              libcxxabi_root + '/src/private_typeinfo.cpp',
+              libcxxabi_root + '/src/stdlib_exception.cpp',
+              libcxxabi_root + '/src/stdlib_stdexcept.cpp',
+              libcxxabi_root + '/src/stdlib_typeinfo.cpp',
+          ],
+          'tool': 'cxx',
+          'cflags': cflags + [
+              '-DLIBCXXABI_SILENT_TERMINATE',
+              '-D_LIBCXXABI_NO_EXCEPTIONS',
+          ]
+      }
       static_libraries['base']['sources'].extend([
         'base/allocator/allocator_shim.cc',
         'base/allocator/allocator_shim_default_dispatch_to_glibc.cc',
@@ -666,6 +841,7 @@ def write_gn_ninja(path, root_gen_dir, options):
          'base/third_party/libevent/epoll.c',
       ])
     else:
+      ldflags.extend(['-pthread'])
       libs.extend(['-lrt'])
       static_libraries['base']['sources'].extend([
           'base/process/internal_aix.cc'
@@ -697,7 +873,9 @@ def write_gn_ninja(path, root_gen_dir, options):
         'base/process/process_iterator_mac.cc',
         'base/process/process_metrics_mac.cc',
         'base/strings/sys_string_conversions_mac.mm',
+        'base/synchronization/waitable_event_mac.cc',
         'base/sys_info_mac.mm',
+        'base/time/time_exploded_posix.cc',
         'base/time/time_mac.cc',
         'base/threading/platform_thread_mac.mm',
     ])
@@ -717,6 +895,9 @@ def write_gn_ninja(path, root_gen_dir, options):
 
   if is_win:
     static_libraries['base']['sources'].extend([
+        "base/allocator/partition_allocator/address_space_randomization.cc",
+        'base/allocator/partition_allocator/page_allocator.cc',
+        "base/allocator/partition_allocator/spin_lock.cc",
         'base/base_paths_win.cc',
         'base/cpu.cc',
         'base/debug/close_handle_hook_win.cc',
@@ -753,17 +934,15 @@ def write_gn_ninja(path, root_gen_dir, options):
         'base/sync_socket_win.cc',
         'base/synchronization/condition_variable_win.cc',
         'base/synchronization/lock_impl_win.cc',
-        'base/synchronization/read_write_lock_win.cc',
         'base/synchronization/waitable_event_watcher_win.cc',
         'base/synchronization/waitable_event_win.cc',
         'base/sys_info_win.cc',
         'base/threading/platform_thread_win.cc',
         'base/threading/thread_local_storage_win.cc',
-        'base/threading/worker_pool_win.cc',
         'base/time/time_win.cc',
         'base/timer/hi_res_timer_manager_win.cc',
-        'base/trace_event/heap_profiler_allocation_register_win.cc',
         'base/trace_event/trace_event_etw_export_win.cc',
+        'base/win/core_winrt_util.cc',
         'base/win/enum_variant.cc',
         'base/win/event_trace_controller.cc',
         'base/win/event_trace_provider.cc',
@@ -777,9 +956,12 @@ def write_gn_ninja(path, root_gen_dir, options):
         'base/win/registry.cc',
         'base/win/resource_util.cc',
         'base/win/scoped_bstr.cc',
+        'base/win/scoped_com_initializer.cc',
         'base/win/scoped_handle.cc',
+        'base/win/scoped_handle_verifier.cc',
         'base/win/scoped_process_information.cc',
         'base/win/scoped_variant.cc',
+        'base/win/scoped_winrt_initializer.cc',
         'base/win/shortcut.cc',
         'base/win/startup_information.cc',
         'base/win/wait_chain.cc',
@@ -799,6 +981,7 @@ def write_gn_ninja(path, root_gen_dir, options):
         'version.lib',
         'winmm.lib',
         'ws2_32.lib',
+        'Shlwapi.lib',
     ])
 
   # we just build static libraries that GN needs
@@ -811,13 +994,22 @@ def build_gn_with_gn(temp_gn, build_dir, options):
   gn_gen_args = options.gn_gen_args or ''
   if not options.debug:
     gn_gen_args += ' is_debug=false'
-  cmd = [temp_gn, 'gen', build_dir, '--args=%s' % gn_gen_args]
+  cmd = [temp_gn, 'gen', build_dir, '--args=%s' % gn_gen_args,
+          "--root="+SRC_ROOT
+         ]
   check_call(cmd)
 
-  cmd = ['ninja', '-C', build_dir]
+  cmd = ['ninja', '-C', build_dir, '-w', 'dupbuild=err']
   if options.verbose:
     cmd.append('-v')
   cmd.append('gn')
+  check_call(cmd)
+
+  # build.ninja currently refers back to gn from the temporary directory.
+  # Regenerate the build files using the gn we just built so that the reference
+  # gets updated to "./gn".
+  cmd = [os.path.join(build_dir, 'gn'), 'gen', build_dir,
+         '--args=%s' % gn_gen_args]
   check_call(cmd)
 
   if not options.debug and not is_win:

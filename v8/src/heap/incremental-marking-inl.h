@@ -15,10 +15,12 @@ namespace internal {
 
 void IncrementalMarking::RecordWrite(HeapObject* obj, Object** slot,
                                      Object* value) {
-  DCHECK_IMPLIES(slot != nullptr, !Internals::HasWeakHeapObjectTag(*slot));
-  DCHECK(!Internals::HasWeakHeapObjectTag(value));
-  RecordMaybeWeakWrite(obj, reinterpret_cast<MaybeObject**>(slot),
-                       reinterpret_cast<MaybeObject*>(value));
+  DCHECK_IMPLIES(slot != nullptr, !HasWeakHeapObjectTag(*slot));
+  DCHECK(!HasWeakHeapObjectTag(value));
+  if (IsMarking() && value->IsHeapObject()) {
+    RecordWriteSlow(obj, reinterpret_cast<HeapObjectReference**>(slot),
+                    HeapObject::cast(value));
+  }
 }
 
 void IncrementalMarking::RecordMaybeWeakWrite(HeapObject* obj,

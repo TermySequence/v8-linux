@@ -1,7 +1,6 @@
-# This file is used by gcl to get repository specific information.
-CODE_REVIEW_SERVER: codereview.chromium.org
+# This file is used by git cl to get repository specific information.
 CC_LIST: chromium-reviews@chromium.org
-VIEW_VC: http://src.chromium.org/viewvc/chrome?view=rev&revision=
-GITCL_PREUPLOAD: http://src.chromium.org/viewvc/chrome/trunk/tools/depot_tools/git-cl-upload-hook?revision=HEAD
-GITCL_PREDCOMMIT: http://src.chromium.org/viewvc/chrome/trunk/tools/depot_tools/git-cl-upload-hook?revision=HEAD
+CODE_REVIEW_SERVER: codereview.chromium.org
+GERRIT_HOST: True
 PROJECT: depot_tools
+VIEW_VC: https://chromium.googlesource.com/chromium/tools/depot_tools/+/

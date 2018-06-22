@@ -694,7 +694,7 @@ FunctionLiteral* Parser::ParseFunction(Isolate* isolate, ParseInfo* info,
   DCHECK_EQ(factory()->zone(), info->zone());
 
   // Initialize parser state.
-  Handle<String> name(shared_info->name());
+  Handle<String> name(shared_info->Name());
   info->set_function_name(ast_value_factory()->GetString(name));
   scanner_.Initialize(info->character_stream(), info->is_module());
 
@@ -3492,52 +3492,10 @@ Expression* Parser::CloseTemplateLiteral(TemplateLiteralState* state, int start,
   DCHECK_EQ(cooked_strings->length(), expressions->length() + 1);
 
   if (!tag) {
-    const AstRawString* first_string = cooked_strings->at(0);
-    if (expressions->length() == 0) {
-      return factory()->NewStringLiteral(first_string, kNoSourcePosition);
+    if (cooked_strings->length() == 1) {
+      return factory()->NewStringLiteral(cooked_strings->first(), pos);
     }
-
-    size_t num_empty =
-        std::count_if(cooked_strings->begin(), cooked_strings->end(),
-                      [=](const AstRawString* lit) { return lit->IsEmpty(); });
-
-    const bool kFirstIsEmpty = first_string->IsEmpty();
-    Expression* first = kFirstIsEmpty ? ToString(expressions->at(0))
-                                      : factory()->NewStringLiteral(
-                                            first_string, kNoSourcePosition);
-
-    // Build N-ary addition op to simplify code-generation.
-    // TODO(leszeks): Could we just store this expression in the
-    // TemplateLiteralState and build it as we go?
-    NaryOperation* expr = factory()->NewNaryOperation(
-        Token::ADD, first, 2 * expressions->length() - num_empty);
-
-    int i = 0;
-    if (kFirstIsEmpty) {
-      // If the first string is empty, possibly add the next template span
-      // outside of the loop, to keep the loop logic simple.
-      i = 1;
-      const AstRawString* str = cooked_strings->at(1);
-      if (!str->IsEmpty()) {
-        expr->AddSubsequent(factory()->NewStringLiteral(str, kNoSourcePosition),
-                            first->position());
-      }
-    }
-
-    while (i < expressions->length()) {
-      Expression* sub = expressions->at(i++);
-      const AstRawString* cooked_str = cooked_strings->at(i);
-      DCHECK_NOT_NULL(cooked_str);
-
-      // Let middle be ToString(sub).
-      expr->AddSubsequent(ToString(sub), sub->position());
-      if (!cooked_str->IsEmpty()) {
-        expr->AddSubsequent(
-            factory()->NewStringLiteral(cooked_str, kNoSourcePosition),
-            sub->position());
-      }
-    }
-    return expr;
+    return factory()->NewTemplateLiteral(cooked_strings, expressions, pos);
   } else {
     // GetTemplateObject
     Expression* template_object =
@@ -3585,52 +3543,35 @@ Expression* Parser::SpreadCall(Expression* function,
                                ZoneList<Expression*>* args_list, int pos,
                                Call::PossiblyEval is_possibly_eval) {
   // Handle this case in BytecodeGenerator.
-  if (OnlyLastArgIsSpread(args_list)) {
+  if (OnlyLastArgIsSpread(args_list) || function->IsSuperCallReference()) {
     return factory()->NewCall(function, args_list, pos);
   }
 
-  if (function->IsSuperCallReference()) {
-    // Super calls
-    // $super_constructor = %_GetSuperConstructor(<this-function>)
-    // %reflect_construct($super_constructor, args, new.target)
-    ZoneList<Expression*>* args = new (zone()) ZoneList<Expression*>(3, zone());
-    ZoneList<Expression*>* tmp = new (zone()) ZoneList<Expression*>(1, zone());
-    tmp->Add(function->AsSuperCallReference()->this_function_var(), zone());
-    args->Add(factory()->NewCallRuntime(Runtime::kInlineGetSuperConstructor,
-                                        tmp, pos),
-              zone());
-    args->Add(ArrayLiteralFromListWithSpread(args_list), zone());
-    args->Add(function->AsSuperCallReference()->new_target_var(), zone());
-    return factory()->NewCallRuntime(Context::REFLECT_CONSTRUCT_INDEX, args,
-                                     pos);
-  } else {
-    ZoneList<Expression*>* args = new (zone()) ZoneList<Expression*>(3, zone());
-    if (function->IsProperty()) {
-      // Method calls
-      if (function->AsProperty()->IsSuperAccess()) {
-        Expression* home = ThisExpression(kNoSourcePosition);
-        args->Add(function, zone());
-        args->Add(home, zone());
-      } else {
-        Variable* temp = NewTemporary(ast_value_factory()->empty_string());
-        VariableProxy* obj = factory()->NewVariableProxy(temp);
-        Assignment* assign_obj = factory()->NewAssignment(
-            Token::ASSIGN, obj, function->AsProperty()->obj(),
-            kNoSourcePosition);
-        function = factory()->NewProperty(
-            assign_obj, function->AsProperty()->key(), kNoSourcePosition);
-        args->Add(function, zone());
-        obj = factory()->NewVariableProxy(temp);
-        args->Add(obj, zone());
-      }
-    } else {
-      // Non-method calls
+  ZoneList<Expression*>* args = new (zone()) ZoneList<Expression*>(3, zone());
+  if (function->IsProperty()) {
+    // Method calls
+    if (function->AsProperty()->IsSuperAccess()) {
+      Expression* home = ThisExpression(kNoSourcePosition);
       args->Add(function, zone());
-      args->Add(factory()->NewUndefinedLiteral(kNoSourcePosition), zone());
+      args->Add(home, zone());
+    } else {
+      Variable* temp = NewTemporary(ast_value_factory()->empty_string());
+      VariableProxy* obj = factory()->NewVariableProxy(temp);
+      Assignment* assign_obj = factory()->NewAssignment(
+          Token::ASSIGN, obj, function->AsProperty()->obj(), kNoSourcePosition);
+      function = factory()->NewProperty(
+          assign_obj, function->AsProperty()->key(), kNoSourcePosition);
+      args->Add(function, zone());
+      obj = factory()->NewVariableProxy(temp);
+      args->Add(obj, zone());
     }
-    args->Add(ArrayLiteralFromListWithSpread(args_list), zone());
-    return factory()->NewCallRuntime(Context::REFLECT_APPLY_INDEX, args, pos);
+  } else {
+    // Non-method calls
+    args->Add(function, zone());
+    args->Add(factory()->NewUndefinedLiteral(kNoSourcePosition), zone());
   }
+  args->Add(ArrayLiteralFromListWithSpread(args_list), zone());
+  return factory()->NewCallRuntime(Context::REFLECT_APPLY_INDEX, args, pos);
 }
 
 Expression* Parser::SpreadCallNew(Expression* function,

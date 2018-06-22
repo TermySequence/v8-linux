@@ -13,16 +13,7 @@ namespace v8_inspector {
 
 namespace {
 
-const char hexDigits[17] = "0123456789ABCDEF";
 const char kGlobalDebuggerScriptHandleLabel[] = "DevTools debugger";
-
-void appendUnsignedAsHex(uint64_t number, String16Builder& destination) {
-  for (size_t i = 0; i < 8; ++i) {
-    UChar c = hexDigits[number & 0xF];
-    destination.append(c);
-    number >>= 4;
-  }
-}
 
 // Hash algorithm for substrings is described in "Über die Komplexität der
 // Multiplikation in
@@ -46,7 +37,8 @@ String16 calculateHash(const String16& str) {
   size_t sizeInBytes = sizeof(UChar) * str.length();
   data = reinterpret_cast<const uint32_t*>(str.characters16());
   for (size_t i = 0; i < sizeInBytes / 4; ++i) {
-    uint32_t d = v8::internal::ReadUnalignedUInt32(data + i);
+    uint32_t d = v8::internal::ReadUnalignedUInt32(
+        reinterpret_cast<v8::internal::Address>(data + i));
 #if V8_TARGET_LITTLE_ENDIAN
     uint32_t v = d;
 #else
@@ -82,8 +74,8 @@ String16 calculateHash(const String16& str) {
     hashes[i] = (hashes[i] + zi[i] * (prime[i] - 1)) % prime[i];
 
   String16Builder hash;
-  // TODO(herhut): Use String16Builder.appendUnsignedAsHex.
-  for (size_t i = 0; i < hashesSize; ++i) appendUnsignedAsHex(hashes[i], hash);
+  for (size_t i = 0; i < hashesSize; ++i)
+    hash.appendUnsignedAsHex((uint32_t)hashes[i]);
   return hash.toString();
 }
 
@@ -249,7 +241,7 @@ class ActualScript : public V8DebuggerScript {
                                    id);
   }
 
-  const String16& hash() override {
+  const String16& hash() const override {
     if (m_hash.isEmpty()) m_hash = calculateHash(source());
     DCHECK(!m_hash.isEmpty());
     return m_hash;
@@ -373,7 +365,7 @@ class WasmVirtualScript : public V8DebuggerScript {
     return true;
   }
 
-  const String16& hash() override {
+  const String16& hash() const override {
     if (m_hash.isEmpty()) {
       m_hash = m_wasmTranslation->GetHash(m_id, m_functionIndex);
     }

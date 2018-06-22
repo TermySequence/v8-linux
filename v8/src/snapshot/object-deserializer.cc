@@ -93,7 +93,8 @@ void ObjectDeserializer::
   for (Code* code : new_code_objects()) {
     // Record all references to embedded objects in the new code object.
     isolate()->heap()->RecordWritesIntoCode(code);
-    Assembler::FlushICache(code->instruction_start(), code->instruction_size());
+    Assembler::FlushICache(code->raw_instruction_start(),
+                           code->raw_instruction_size());
   }
 }
 
@@ -102,9 +103,10 @@ void ObjectDeserializer::CommitPostProcessedObjects() {
   StringTable::EnsureCapacityForDeserialization(
       isolate(), static_cast<int>(new_internalized_strings().size()));
   for (Handle<String> string : new_internalized_strings()) {
+    DisallowHeapAllocation no_gc;
     StringTableInsertionKey key(*string);
     DCHECK_NULL(StringTable::ForwardStringIfExists(isolate(), &key, *string));
-    StringTable::LookupKey(isolate(), &key);
+    StringTable::AddKeyNoResize(isolate(), &key);
   }
 
   Heap* heap = isolate()->heap();
@@ -113,7 +115,8 @@ void ObjectDeserializer::CommitPostProcessedObjects() {
     // Assign a new script id to avoid collision.
     script->set_id(isolate()->heap()->NextScriptId());
     // Add script to list.
-    Handle<Object> list = WeakFixedArray::Add(factory->script_list(), script);
+    Handle<Object> list =
+        FixedArrayOfWeakCells::Add(factory->script_list(), script);
     heap->SetRootScriptList(*list);
   }
 }

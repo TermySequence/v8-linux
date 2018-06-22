@@ -21,14 +21,15 @@
 #include "base/strings/string_piece.h"
 #include "build/build_config.h"
 
-#if defined(OS_POSIX)
-#include "base/posix/file_descriptor_shuffle.h"
-#elif defined(OS_WIN)
+#if defined(OS_WIN)
 #include <windows.h>
+#elif defined(OS_FUCHSIA)
+#include <lib/fdio/spawn.h>
+#include <zircon/types.h>
 #endif
 
-#if defined(OS_FUCHSIA)
-#include <magenta/types.h>
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
+#include "base/posix/file_descriptor_shuffle.h"
 #endif
 
 namespace base {
@@ -38,23 +39,30 @@ class CommandLine;
 #if defined(OS_WIN)
 typedef std::vector<HANDLE> HandlesToInheritVector;
 #elif defined(OS_FUCHSIA)
-typedef std::vector<mx_handle_t> HandlesToInheritVector;
-#endif
-
-#if defined(OS_POSIX)
+struct PathToTransfer {
+  base::FilePath path;
+  zx_handle_t handle;
+};
+struct HandleToTransfer {
+  uint32_t id;
+  zx_handle_t handle;
+};
+typedef std::vector<HandleToTransfer> HandlesToTransferVector;
 typedef std::vector<std::pair<int, int>> FileHandleMappingVector;
-#endif
+#elif defined(OS_POSIX)
+typedef std::vector<std::pair<int, int>> FileHandleMappingVector;
+#endif  // defined(OS_WIN)
 
 // Options for launching a subprocess that are passed to LaunchProcess().
 // The default constructor constructs the object with default options.
 struct BASE_EXPORT LaunchOptions {
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
   // Delegate to be run in between fork and exec in the subprocess (see
   // pre_exec_delegate below)
   class BASE_EXPORT PreExecDelegate {
    public:
-    PreExecDelegate() {}
-    virtual ~PreExecDelegate() {}
+    PreExecDelegate() = default;
+    virtual ~PreExecDelegate() = default;
 
     // Since this is to be run between fork and exec, and fork may have happened
     // while multiple threads were running, this function needs to be async
@@ -144,7 +152,11 @@ struct BASE_EXPORT LaunchOptions {
   // CREATE_BREAKAWAY_FROM_JOB flag which allows it to breakout of the parent
   // job if any.
   bool force_breakaway_from_job_ = false;
-#else  // !defined(OS_WIN)
+
+  // If set to true, permission to bring windows to the foreground is passed to
+  // the launched process if the current process has such permission.
+  bool grant_foreground_privilege = false;
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   // Set/unset environment variables. These are applied on top of the parent
   // process environment.  Empty (the default) means to inherit the same
   // environment. See AlterEnvironment().
@@ -157,16 +169,7 @@ struct BASE_EXPORT LaunchOptions {
   // Remap file descriptors according to the mapping of src_fd->dest_fd to
   // propagate FDs into the child process.
   FileHandleMappingVector fds_to_remap;
-
-  // Each element is an RLIMIT_* constant that should be raised to its
-  // rlim_max.  This pointer is owned by the caller and must live through
-  // the call to LaunchProcess().
-  const std::vector<int>* maximize_rlimits = nullptr;
-
-  // If true, start the process in a new process group, instead of
-  // inheriting the parent's process group.  The pgid of the child process
-  // will be the same as its pid.
-  bool new_process_group = false;
+#endif  // defined(OS_WIN)
 
 #if defined(OS_LINUX)
   // If non-zero, start the process using clone(), using flags as provided.
@@ -185,8 +188,34 @@ struct BASE_EXPORT LaunchOptions {
 
 #if defined(OS_FUCHSIA)
   // If valid, launches the application in that job object.
-  mx_handle_t job_handle = MX_HANDLE_INVALID;
-#endif
+  zx_handle_t job_handle = ZX_HANDLE_INVALID;
+
+  // Specifies additional handles to transfer (not duplicate) to the child
+  // process. Each entry is an <id,handle> pair, with an |id| created using the
+  // PA_HND() macro. The child retrieves the handle
+  // |zx_take_startup_handle(id)|. The supplied handles are consumed by
+  // LaunchProcess() even on failure.
+  HandlesToTransferVector handles_to_transfer;
+
+  // Specifies which basic capabilities to grant to the child process.
+  // By default the child process will receive the caller's complete namespace,
+  // access to the current base::fuchsia::DefaultJob(), handles for stdio and
+  // access to the dynamic library loader.
+  // Note that the child is always provided access to the loader service.
+  uint32_t spawn_flags = FDIO_SPAWN_CLONE_NAMESPACE | FDIO_SPAWN_CLONE_STDIO |
+                         FDIO_SPAWN_CLONE_JOB;
+
+  // Specifies paths to clone from the calling process' namespace into that of
+  // the child process. If |paths_to_clone| is empty then the process will
+  // receive either a full copy of the parent's namespace, or an empty one,
+  // depending on whether FDIO_SPAWN_CLONE_NAMESPACE is set.
+  std::vector<FilePath> paths_to_clone;
+
+  // Specifies handles which will be installed as files or directories in the
+  // child process' namespace. Paths installed by |paths_to_clone| will be
+  // overridden by these entries.
+  std::vector<PathToTransfer> paths_to_transfer;
+#endif  // defined(OS_FUCHSIA)
 
 #if defined(OS_POSIX)
   // If not empty, launch the specified executable instead of
@@ -201,6 +230,16 @@ struct BASE_EXPORT LaunchOptions {
   // code running in this delegate essentially needs to be async-signal safe
   // (see man 7 signal for a list of allowed functions).
   PreExecDelegate* pre_exec_delegate = nullptr;
+
+  // Each element is an RLIMIT_* constant that should be raised to its
+  // rlim_max.  This pointer is owned by the caller and must live through
+  // the call to LaunchProcess().
+  const std::vector<int>* maximize_rlimits = nullptr;
+
+  // If true, start the process in a new process group, instead of
+  // inheriting the parent's process group.  The pgid of the child process
+  // will be the same as its pid.
+  bool new_process_group = false;
 #endif  // defined(OS_POSIX)
 
 #if defined(OS_CHROMEOS)
@@ -208,7 +247,6 @@ struct BASE_EXPORT LaunchOptions {
   // process' controlling terminal.
   int ctrl_terminal_fd = -1;
 #endif  // defined(OS_CHROMEOS)
-#endif  // !defined(OS_WIN)
 };
 
 // Launch a process via the command line |cmdline|.
@@ -249,7 +287,7 @@ BASE_EXPORT Process LaunchProcess(const string16& cmdline,
 BASE_EXPORT Process LaunchElevatedProcess(const CommandLine& cmdline,
                                           const LaunchOptions& options);
 
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
 // A POSIX-specific version of LaunchProcess that takes an argv array
 // instead of a CommandLine.  Useful for situations where you need to
 // control the command line arguments directly, but prefer the
@@ -261,7 +299,7 @@ BASE_EXPORT Process LaunchProcess(const std::vector<std::string>& argv,
 // given multimap. Only call this function in a child process where you know
 // that there aren't any other threads.
 BASE_EXPORT void CloseSuperfluousFds(const InjectiveMultimap& saved_map);
-#endif  // defined(OS_POSIX)
+#endif  // defined(OS_WIN)
 
 #if defined(OS_WIN)
 // Set |job_object|'s JOBOBJECT_EXTENDED_LIMIT_INFORMATION
@@ -295,9 +333,7 @@ BASE_EXPORT bool GetAppOutputWithExitCode(const CommandLine& cl,
 // instead of a CommandLine object. Useful for situations where you need to
 // control the command line arguments directly.
 BASE_EXPORT bool GetAppOutput(const StringPiece16& cl, std::string* output);
-#endif
-
-#if defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
 // A POSIX-specific version of GetAppOutput that takes an argv array
 // instead of a CommandLine.  Useful for situations where you need to
 // control the command line arguments directly.
@@ -308,7 +344,7 @@ BASE_EXPORT bool GetAppOutput(const std::vector<std::string>& argv,
 // stderr.
 BASE_EXPORT bool GetAppOutputAndError(const std::vector<std::string>& argv,
                                       std::string* output);
-#endif  // defined(OS_POSIX)
+#endif  // defined(OS_WIN)
 
 // If supported on the platform, and the user has sufficent rights, increase
 // the current process's scheduling priority to a high priority.
@@ -342,9 +378,7 @@ BASE_EXPORT LaunchOptions LaunchOptionsForTest();
 //
 // This function uses the libc clone wrapper (which updates libc's pid cache)
 // internally, so callers may expect things like getpid() to work correctly
-// after in both the child and parent. An exception is when this code is run
-// under Valgrind. Valgrind does not support the libc clone wrapper, so the libc
-// pid cache may be incorrect after this function is called under Valgrind.
+// after in both the child and parent.
 //
 // As with fork(), callers should be extremely careful when calling this while
 // multiple threads are running, since at the time the fork happened, the

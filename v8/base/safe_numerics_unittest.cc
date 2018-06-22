@@ -18,6 +18,13 @@
 #pragma warning(disable : 4293)  // Invalid shift.
 #endif
 
+// This may not need to come before the base/numerics headers, but let's keep
+// it close to the MSVC equivalent.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winteger-overflow"
+#endif
+
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/numerics/safe_math.h"
@@ -1012,10 +1019,19 @@ struct TestNumericConversion<Dst, Src, SIGN_PRESERVING_NARROW> {
     TEST_EXPECTED_VALUE(1, checked_dst + Src(1));
     TEST_EXPECTED_FAILURE(checked_dst - SrcLimits::max());
 
-    const ClampedNumeric<Dst> clamped_dst;
+    ClampedNumeric<Dst> clamped_dst;
     TEST_EXPECTED_VALUE(DstLimits::Overflow(), clamped_dst + SrcLimits::max());
     TEST_EXPECTED_VALUE(1, clamped_dst + Src(1));
     TEST_EXPECTED_VALUE(DstLimits::Underflow(), clamped_dst - SrcLimits::max());
+    clamped_dst += SrcLimits::max();
+    TEST_EXPECTED_VALUE(DstLimits::Overflow(), clamped_dst);
+    clamped_dst = DstLimits::max();
+    clamped_dst += SrcLimits::max();
+    TEST_EXPECTED_VALUE(DstLimits::Overflow(), clamped_dst);
+    clamped_dst = DstLimits::max();
+    clamped_dst -= SrcLimits::max();
+    TEST_EXPECTED_VALUE(DstLimits::Underflow(), clamped_dst);
+    clamped_dst = 0;
 
     TEST_EXPECTED_RANGE(RANGE_OVERFLOW, SrcLimits::max());
     TEST_EXPECTED_RANGE(RANGE_VALID, static_cast<Src>(1));
@@ -1104,13 +1120,22 @@ struct TestNumericConversion<Dst, Src, SIGN_TO_UNSIGN_NARROW> {
     TEST_EXPECTED_FAILURE(checked_dst + static_cast<Src>(-1));
     TEST_EXPECTED_FAILURE(checked_dst + SrcLimits::lowest());
 
-    const ClampedNumeric<Dst> clamped_dst;
+    ClampedNumeric<Dst> clamped_dst;
     TEST_EXPECTED_VALUE(1, clamped_dst + static_cast<Src>(1));
     TEST_EXPECTED_VALUE(DstLimits::Overflow(), clamped_dst + SrcLimits::max());
     TEST_EXPECTED_VALUE(DstLimits::Underflow(),
                         clamped_dst + static_cast<Src>(-1));
     TEST_EXPECTED_VALUE(DstLimits::Underflow(),
                         clamped_dst + SrcLimits::lowest());
+    clamped_dst += SrcLimits::max();
+    TEST_EXPECTED_VALUE(DstLimits::Overflow(), clamped_dst);
+    clamped_dst = DstLimits::max();
+    clamped_dst += SrcLimits::max();
+    TEST_EXPECTED_VALUE(DstLimits::Overflow(), clamped_dst);
+    clamped_dst = DstLimits::max();
+    clamped_dst -= SrcLimits::max();
+    TEST_EXPECTED_VALUE(DstLimits::Underflow(), clamped_dst);
+    clamped_dst = 0;
 
     TEST_EXPECTED_RANGE(RANGE_OVERFLOW, SrcLimits::max());
     TEST_EXPECTED_RANGE(RANGE_VALID, static_cast<Src>(1));
@@ -1461,6 +1486,11 @@ TEST(SafeNumerics, CastTests) {
   EXPECT_EQ(1, checked_cast<int>(StrictNumeric<int>(1)));
   EXPECT_EQ(1, saturated_cast<int>(StrictNumeric<int>(1)));
   EXPECT_EQ(1, strict_cast<int>(StrictNumeric<int>(1)));
+
+  enum class EnumTest { kOne = 1 };
+  EXPECT_EQ(1, checked_cast<int>(EnumTest::kOne));
+  EXPECT_EQ(1, saturated_cast<int>(EnumTest::kOne));
+  EXPECT_EQ(1, strict_cast<int>(EnumTest::kOne));
 }
 
 TEST(SafeNumerics, IsValueInRangeForNumericType) {
@@ -1601,6 +1631,10 @@ TEST(SafeNumerics, VariadicNumericOperations) {
     EXPECT_EQ(static_cast<decltype(h)::type>(1), h);
   }
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop  // -Winteger-overflow
+#endif
 
 }  // namespace internal
 }  // namespace base

@@ -14,10 +14,10 @@ Usage:
 import logging
 import optparse
 import sys
-
-from third_party import colorama
+import os
 
 import auth
+import setup_color
 import subcommand
 
 __version__ = '1.0'
@@ -94,7 +94,7 @@ def main(argv):
 
 
 if __name__ == '__main__':
-  colorama.init()
+  setup_color.init()
   try:
     sys.exit(main(sys.argv[1:]))
   except KeyboardInterrupt:

@@ -4,24 +4,23 @@
 
 import sys
 
-import config_util  # pylint: disable=F0401
+import config_util  # pylint: disable=import-error
 
 
 # This class doesn't need an __init__ method, so we disable the warning
-# pylint: disable=W0232
+# pylint: disable=no-init
 class Dart(config_util.Config):
   """Basic Config class for Dart."""
 
   @staticmethod
   def fetch_spec(props):
-    url = 'https://github.com/dart-lang/sdk.git'
+    url = 'https://dart.googlesource.com/sdk.git'
     solution = {
       'name'   :'sdk',
       'url'    : url,
       'deps_file': 'DEPS',
       'managed'   : False,
       'custom_deps': {},
-      'safesync_url': '',
     }
     spec = {
       'solutions': [solution],

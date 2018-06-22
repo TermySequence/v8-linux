@@ -33,7 +33,6 @@ class JavaScriptFrame;
   V(function_name, FunctionName)                                    \
   V(function_length, FunctionLength)                                \
   V(function_prototype, FunctionPrototype)                          \
-  V(reconfigure_to_data_property, ReconfigureToDataProperty)        \
   V(script_column_offset, ScriptColumnOffset)                       \
   V(script_compilation_type, ScriptCompilationType)                 \
   V(script_context_data, ScriptContextData)                         \
@@ -55,6 +54,7 @@ class JavaScriptFrame;
   V(BoundFunctionName)                         \
   V(FunctionName)                              \
   V(FunctionLength)                            \
+  V(FunctionPrototype)                         \
   V(StringLength)
 
 #define ACCESSOR_SETTER_LIST(V) \
@@ -82,6 +82,16 @@ class Accessors : public AllStatic {
   ACCESSOR_SETTER_LIST(ACCESSOR_SETTER_DECLARATION)
 #undef ACCESSOR_SETTER_DECLARATION
 
+  static constexpr int kAccessorInfoCount =
+#define COUNT_ACCESSOR(...) +1
+      ACCESSOR_INFO_LIST(COUNT_ACCESSOR);
+#undef COUNT_ACCESSOR
+
+  static constexpr int kAccessorSetterCount =
+#define COUNT_ACCESSOR(...) +1
+      ACCESSOR_SETTER_LIST(COUNT_ACCESSOR);
+#undef COUNT_ACCESSOR
+
   static void ModuleNamespaceEntryGetter(
       v8::Local<v8::Name> name,
       const v8::PropertyCallbackInfo<v8::Value>& info);
@@ -98,6 +108,10 @@ class Accessors : public AllStatic {
   // If true, the matching FieldIndex is returned through |field_index|.
   static bool IsJSObjectFieldAccessor(Handle<Map> map, Handle<Name> name,
                                       FieldIndex* field_index);
+
+  static MaybeHandle<Object> ReplaceAccessorWithDataProperty(
+      Isolate* isolate, Handle<Object> receiver, Handle<JSObject> holder,
+      Handle<Name> name, Handle<Object> value);
 
   // Create an AccessorInfo. The setter is optional (can be nullptr).
   //

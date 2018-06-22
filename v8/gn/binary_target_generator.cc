@@ -24,8 +24,7 @@ BinaryTargetGenerator::BinaryTargetGenerator(
       output_type_(type) {
 }
 
-BinaryTargetGenerator::~BinaryTargetGenerator() {
-}
+BinaryTargetGenerator::~BinaryTargetGenerator() = default;
 
 void BinaryTargetGenerator::DoRun() {
   target_->set_output_type(output_type_);
@@ -48,10 +47,10 @@ void BinaryTargetGenerator::DoRun() {
   if (!FillPublic())
     return;
 
-  if (!FillCheckIncludes())
+  if (!FillFriends())
     return;
 
-  if (!FillInputs())
+  if (!FillCheckIncludes())
     return;
 
   if (!FillConfigs())
@@ -79,6 +78,15 @@ bool BinaryTargetGenerator::FillCompleteStaticLib() {
     if (!value->VerifyTypeIs(Value::BOOLEAN, err_))
       return false;
     target_->set_complete_static_lib(value->boolean_value());
+  }
+  return true;
+}
+
+bool BinaryTargetGenerator::FillFriends() {
+  const Value* value = scope_->GetValue(variables::kFriend, true);
+  if (value) {
+    return ExtractListOfLabelPatterns(*value, scope_->GetSourceDir(),
+                                      &target_->friends(), err_);
   }
   return true;
 }

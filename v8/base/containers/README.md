@@ -46,7 +46,7 @@ Google naming. Be sure to use the base namespace.
   * **base::small\_map** has better runtime memory usage without the poor
     mutation performance of large containers that base::flat\_map has. But this
     advantage is partially offset by additional code size. Prefer in cases
-    where you make many objects so that the code/heap tradeoff is good.
+    where you make many objects so that the code/heap tradeoff is good.
 
   * Use **std::map** and **std::set** if you can't decide. Even if they're not
     great, they're unlikely to be bad or surprising.
@@ -136,38 +136,17 @@ http://en.cppreference.com/w/cpp/utility/functional/less_void
 Example, smart pointer set:
 
 ```cpp
-// Define a custom comparator.
-struct UniquePtrComparator {
-  // Mark your comparison as transparent.
-  using is_transparent = int;
-
-  template <typename T>
-  bool operator()(const std::unique_ptr<T>& lhs,
-                  const std::unique_ptr<T>& rhs) const {
-    return lhs < rhs;
-  }
-
-  template <typename T>
-  bool operator()(const T* lhs, const std::unique_ptr<T>& rhs) const {
-    return lhs < rhs.get();
-  }
-
-  template <typename T>
-  bool operator()(const std::unique_ptr<T>& lhs, const T* rhs) const {
-    return lhs.get() < rhs;
-  }
-};
-
-// Declare a typedef.
+// Declare a type alias using base::UniquePtrComparator.
 template <typename T>
-using UniquePtrSet = base::flat_set<std::unique_ptr<T>, UniquePtrComparator>;
+using UniquePtrSet = base::flat_set<std::unique_ptr<T>,
+                                    base::UniquePtrComparator>;
 
 // ...
 // Collect data.
 std::vector<std::unique_ptr<int>> ptr_vec;
 ptr_vec.reserve(5);
 std::generate_n(std::back_inserter(ptr_vec), 5, []{
-  return base::MakeUnique<int>(0);
+  return std::make_unique<int>(0);
 });
 
 // Construct a set.
@@ -210,6 +189,81 @@ The initial size in the above table is assuming a very small inline table. The
 actual size will be sizeof(int) + min(sizeof(std::map), sizeof(T) *
 inline\_size).
 
+# Deque
+
+### Usage advice
+
+Chromium code should always use `base::circular_deque` or `base::queue` in
+preference to `std::deque` or `std::queue` due to memory usage and platform
+variation.
+
+The `base::circular_deque` implementation (and the `base::queue` which uses it)
+provide performance consistent across platforms that better matches most
+programmer's expectations on performance (it doesn't waste as much space as
+libc++ and doesn't do as many heap allocations as MSVC). It also generates less
+code tham `std::queue`: using it across the code base saves several hundred
+kilobytes.
+
+Since `base::deque` does not have stable iterators and it will move the objects
+it contains, it may not be appropriate for all uses. If you need these,
+consider using a `std::list` which will provide constant time insert and erase.
+
+### std::deque and std::queue
+
+The implementation of `std::deque` varies considerably which makes it hard to
+reason about. All implementations use a sequence of data blocks referenced by
+an array of pointers. The standard guarantees random access, amortized
+constant operations at the ends, and linear mutations in the middle.
+
+In Microsoft's implementation, each block is the smaller of 16 bytes or the
+size of the contained element. This means in practice that every expansion of
+the deque of non-trivial classes requires a heap allocation. libc++ (on Android
+and Mac) uses 4K blocks which elimiates the problem of many heap allocations,
+but generally wastes a large amount of space (an Android analysis revealed more
+than 2.5MB wasted space from deque alone, resulting in some optimizations).
+libstdc++ uses an intermediate-size 512 byte buffer.
+
+Microsoft's implementation never shrinks the deque capacity, so the capacity
+will always be the maximum number of elements ever contained. libstdc++
+deallocates blocks as they are freed. libc++ keeps up to two empty blocks.
+
+### base::circular_deque and base::queue
+
+A deque implemented as a circular buffer in an array. The underlying array will
+grow like a `std::vector` while the beginning and end of the deque will move
+around. The items will wrap around the underlying buffer so the storage will
+not be contiguous, but fast random access iterators are still possible.
+
+When the underlying buffer is filled, it will be reallocated and the constents
+moved (like a `std::vector`). The underlying buffer will be shrunk if there is
+too much wasted space (_unlike_ a `std::vector`). As a result, iterators are
+not stable across mutations.
+
+# Stack
+
+`std::stack` is like `std::queue` in that it is a wrapper around an underlying
+container. The default container is `std::deque` so everything from the deque
+section applies.
+
+Chromium provides `base/containers/stack.h` which defines `base::stack` that
+should be used in preference to std::stack. This changes the underlying
+container to `base::circular_deque`. The result will be very similar to
+manually specifying a `std::vector` for the underlying implementation except
+that the storage will shrink when it gets too empty (vector will never
+reallocate to a smaller size).
+
+Watch out: with some stack usage patterns it's easy to depend on unstable
+behavior:
+
+```cpp
+base::stack<Foo> stack;
+for (...) {
+  Foo& current = stack.top();
+  DoStuff();  // May call stack.push(), say if writing a parser.
+  current.done = true;  // Current may reference deleted item!
+}
+```
+
 ## Appendix
 
 ### Code for map code size comparison
@@ -217,7 +271,7 @@ inline\_size).
 This just calls insert and query a number of times, with printfs that prevent
 things from being dead-code eliminated.
 
-```
+```cpp
 TEST(Foo, Bar) {
   base::small_map<std::map<std::string, Flubber>> foo;
   foo.insert(std::make_pair("foo", Flubber(8, "bar")));

@@ -16,6 +16,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import urllib
 import urlparse
 import webbrowser
@@ -44,14 +45,12 @@ OAUTH_CLIENT_ID = (
     '446450136466-2hr92jrq8e6i4tnsa56b52vacp7t3936.apps.googleusercontent.com')
 OAUTH_CLIENT_SECRET = 'uBfbay2KCy9t4QveJ-dOqHtp'
 
-# List of space separated OAuth scopes for generated tokens. GAE apps usually
-# use userinfo.email scope for authentication.
-OAUTH_SCOPES = 'https://www.googleapis.com/auth/userinfo.email'
-
-# Additional OAuth scopes.
-ADDITIONAL_SCOPES = {
-  'code.google.com': 'https://www.googleapis.com/auth/projecthosting',
-}
+# This is what most GAE apps require for authentication.
+OAUTH_SCOPE_EMAIL = 'https://www.googleapis.com/auth/userinfo.email'
+# Gerrit and Git on *.googlesource.com require this scope.
+OAUTH_SCOPE_GERRIT = 'https://www.googleapis.com/auth/gerritcodereview'
+# Deprecated. Use OAUTH_SCOPE_EMAIL instead.
+OAUTH_SCOPES = OAUTH_SCOPE_EMAIL
 
 # Path to a file with cached OAuth2 credentials used by default relative to the
 # home dir (see _get_token_cache_path). It should be a safe location accessible
@@ -73,10 +72,20 @@ AuthConfig = collections.namedtuple('AuthConfig', [
 
 
 # OAuth access token with its expiration time (UTC datetime or None if unknown).
-AccessToken = collections.namedtuple('AccessToken', [
+class AccessToken(collections.namedtuple('AccessToken', [
     'token',
     'expires_at',
-])
+  ])):
+
+  def needs_refresh(self, now=None):
+    """True if this AccessToken should be refreshed."""
+    if self.expires_at is not None:
+      now = now or datetime.datetime.utcnow()
+      # Allow 3 min of clock skew between client and backend.
+      now += datetime.timedelta(seconds=180)
+      return now >= self.expires_at
+    # Token without expiration time never expires.
+    return False
 
 
 # Refresh token passed via --auth-refresh-token-json.
@@ -100,6 +109,172 @@ class LoginRequiredError(AuthenticationError):
         'You are not logged in. Please login first by running:\n'
         '  depot-tools-auth login %s' % token_cache_key)
     super(LoginRequiredError, self).__init__(msg)
+
+
+class LuciContextAuthError(Exception):
+  """Raised on errors related to unsuccessful attempts to load LUCI_CONTEXT"""
+
+  def __init__(self, msg, exc=None):
+    if exc is None:
+      logging.error(msg)
+    else:
+      logging.exception(msg)
+      msg = '%s: %s' % (msg, exc)
+    super(LuciContextAuthError, self).__init__(msg)
+
+
+def has_luci_context_local_auth():
+  """Returns whether LUCI_CONTEXT should be used for ambient authentication.
+  """
+  try:
+    params = _get_luci_context_local_auth_params()
+  except LuciContextAuthError:
+    return False
+  if params is None:
+    return False
+  return bool(params.default_account_id)
+
+
+def get_luci_context_access_token(scopes=OAUTH_SCOPE_EMAIL):
+  """Returns a valid AccessToken from the local LUCI context auth server.
+
+  Adapted from
+  https://chromium.googlesource.com/infra/luci/luci-py/+/master/client/libs/luci_context/luci_context.py
+  See the link above for more details.
+
+  Returns:
+    AccessToken if LUCI_CONTEXT is present and attempt to load it is successful.
+    None if LUCI_CONTEXT is absent.
+
+  Raises:
+    LuciContextAuthError if LUCI_CONTEXT is present, but there was a failure
+    obtaining its access token.
+  """
+  params = _get_luci_context_local_auth_params()
+  if params is None:
+    return None
+  return _get_luci_context_access_token(
+      params, datetime.datetime.utcnow(), scopes)
+
+
+_LuciContextLocalAuthParams = collections.namedtuple(
+  '_LuciContextLocalAuthParams', [
+    'default_account_id',
+    'secret',
+    'rpc_port',
+])
+
+
+def _cache_thread_safe(f):
+  """Decorator caching result of nullary function in thread-safe way."""
+  lock = threading.Lock()
+  cache = []
+
+  @functools.wraps(f)
+  def caching_wrapper():
+    if not cache:
+      with lock:
+        if not cache:
+          cache.append(f())
+    return cache[0]
+
+  # Allow easy way to clear cache, particularly useful in tests.
+  caching_wrapper.clear_cache = lambda: cache.pop() if cache else None
+  return caching_wrapper
+
+
+@_cache_thread_safe
+def _get_luci_context_local_auth_params():
+  """Returns local auth parameters if local auth is configured else None.
+
+  Raises LuciContextAuthError on unexpected failures.
+  """
+  ctx_path = os.environ.get('LUCI_CONTEXT')
+  if not ctx_path:
+    return None
+  ctx_path = ctx_path.decode(sys.getfilesystemencoding())
+  try:
+    loaded = _load_luci_context(ctx_path)
+  except (OSError, IOError, ValueError) as e:
+    raise LuciContextAuthError('Failed to open, read or decode LUCI_CONTEXT', e)
+  try:
+    local_auth = loaded.get('local_auth')
+  except AttributeError as e:
+    raise LuciContextAuthError('LUCI_CONTEXT not in proper format', e)
+  if local_auth is None:
+    logging.debug('LUCI_CONTEXT configured w/o local auth')
+    return None
+  try:
+    return _LuciContextLocalAuthParams(
+        default_account_id=local_auth.get('default_account_id'),
+        secret=local_auth.get('secret'),
+        rpc_port=int(local_auth.get('rpc_port')))
+  except (AttributeError, ValueError) as e:
+    raise LuciContextAuthError('local_auth config malformed', e)
+
+
+def _load_luci_context(ctx_path):
+  # Kept separate for test mocking.
+  with open(ctx_path) as f:
+    return json.load(f)
+
+
+def _get_luci_context_access_token(params, now, scopes=OAUTH_SCOPE_EMAIL):
+  # No account, local_auth shouldn't be used.
+  if not params.default_account_id:
+    return None
+  if not params.secret:
+    raise LuciContextAuthError('local_auth: no secret')
+
+  logging.debug('local_auth: requesting an access token for account "%s"',
+      params.default_account_id)
+  http = httplib2.Http()
+  host = '127.0.0.1:%d' % params.rpc_port
+  resp, content = http.request(
+      uri='http://%s/rpc/LuciLocalAuthService.GetOAuthToken' % host,
+      method='POST',
+      body=json.dumps({
+        'account_id': params.default_account_id,
+        'scopes': scopes.split(' '),
+        'secret': params.secret,
+      }),
+      headers={'Content-Type': 'application/json'})
+  if resp.status != 200:
+    raise LuciContextAuthError(
+        'local_auth: Failed to grab access token from '
+        'LUCI context server with status %d: %r' % (resp.status, content))
+  try:
+    token = json.loads(content)
+    error_code = token.get('error_code')
+    error_message = token.get('error_message')
+    access_token = token.get('access_token')
+    expiry = token.get('expiry')
+  except (AttributeError, ValueError) as e:
+    raise LuciContextAuthError('Unexpected access token response format', e)
+  if error_code:
+    raise LuciContextAuthError(
+        'Error %d in retrieving access token: %s', error_code, error_message)
+  if not access_token:
+    raise LuciContextAuthError(
+        'No access token returned from LUCI context server')
+  expiry_dt = None
+  if expiry:
+    try:
+      expiry_dt = datetime.datetime.utcfromtimestamp(expiry)
+      logging.debug(
+        'local_auth: got an access token for '
+        'account "%s" that expires in %d sec',
+        params.default_account_id, (expiry_dt - now).total_seconds())
+    except (TypeError, ValueError) as e:
+      raise LuciContextAuthError('Invalid expiry in returned token', e)
+  else:
+    logging.debug(
+        'local auth: got an access token for account "%s" that does not expire',
+        params.default_account_id)
+  access_token = AccessToken(access_token, expiry_dt)
+  if access_token.needs_refresh(now=now):
+    raise LuciContextAuthError('Received access token is already expired')
+  return access_token
 
 
 def make_auth_config(
@@ -209,25 +384,26 @@ def auth_config_to_command_options(auth_config):
   return opts
 
 
-def get_authenticator_for_host(hostname, config):
+def get_authenticator_for_host(hostname, config, scopes=OAUTH_SCOPE_EMAIL):
   """Returns Authenticator instance to access given host.
 
   Args:
     hostname: a naked hostname or http(s)://<hostname>[/] URL. Used to derive
         a cache key for token cache.
     config: AuthConfig instance.
+    scopes: space separated oauth scopes. Defaults to OAUTH_SCOPE_EMAIL.
 
   Returns:
     Authenticator object.
+
+  Raises:
+    AuthenticationError if hostname is invalid.
   """
   hostname = hostname.lower().rstrip('/')
   # Append some scheme, otherwise urlparse puts hostname into parsed.path.
   if '://' not in hostname:
     hostname = 'https://' + hostname
-  scopes = OAUTH_SCOPES
   parsed = urlparse.urlparse(hostname)
-  if parsed.netloc in ADDITIONAL_SCOPES:
-    scopes = "%s %s" % (scopes, ADDITIONAL_SCOPES[parsed.netloc])
 
   if parsed.path or parsed.params or parsed.query or parsed.fragment:
     raise AuthenticationError(
@@ -303,35 +479,59 @@ class Authenticator(object):
     with self._lock:
       return bool(self._get_cached_credentials())
 
-  def get_access_token(self, force_refresh=False, allow_user_interaction=False):
+  def get_access_token(self, force_refresh=False, allow_user_interaction=False,
+                       use_local_auth=True):
     """Returns AccessToken, refreshing it if necessary.
 
     Args:
       force_refresh: forcefully refresh access token even if it is not expired.
       allow_user_interaction: True to enable blocking for user input if needed.
+      use_local_auth: default to local auth if needed.
 
     Raises:
       AuthenticationError on error or if authentication flow was interrupted.
       LoginRequiredError if user interaction is required, but
           allow_user_interaction is False.
     """
+    def get_loc_auth_tkn():
+      exi = sys.exc_info()
+      if not use_local_auth:
+        logging.error('Failed to create access token')
+        raise
+      try:
+        self._access_token = get_luci_context_access_token()
+        if not self._access_token:
+          logging.error('Failed to create access token')
+          raise
+        return self._access_token
+      except LuciContextAuthError:
+        logging.exception('Failed to use local auth')
+        raise exi[0], exi[1], exi[2]
+
     with self._lock:
       if force_refresh:
         logging.debug('Forcing access token refresh')
-        self._access_token = self._create_access_token(allow_user_interaction)
-        return self._access_token
+        try:
+          self._access_token = self._create_access_token(allow_user_interaction)
+          return self._access_token
+        except LoginRequiredError:
+          return get_loc_auth_tkn()
 
       # Load from on-disk cache on a first access.
       if not self._access_token:
         self._access_token = self._load_access_token()
 
       # Refresh if expired or missing.
-      if not self._access_token or _needs_refresh(self._access_token):
+      if not self._access_token or self._access_token.needs_refresh():
         # Maybe some other process already updated it, reload from the cache.
         self._access_token = self._load_access_token()
         # Nope, still expired, need to run the refresh flow.
-        if not self._access_token or _needs_refresh(self._access_token):
-          self._access_token = self._create_access_token(allow_user_interaction)
+        if not self._access_token or self._access_token.needs_refresh():
+          try:
+            self._access_token = self._create_access_token(
+                allow_user_interaction)
+          except LoginRequiredError:
+            get_loc_auth_tkn()
 
       return self._access_token
 
@@ -546,16 +746,6 @@ def _read_refresh_token_json(path):
   except KeyError as e:
     raise AuthenticationError(
         'Failed to read refresh token from %s: missing key %s' % (path, e))
-
-
-def _needs_refresh(access_token):
-  """True if AccessToken should be refreshed."""
-  if access_token.expires_at is not None:
-    # Allow 5 min of clock skew between client and backend.
-    now = datetime.datetime.utcnow() + datetime.timedelta(seconds=300)
-    return now >= access_token.expires_at
-  # Token without expiration time never expires.
-  return False
 
 
 def _log_credentials_info(title, credentials):

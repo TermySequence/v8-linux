@@ -4,16 +4,16 @@
 
 import sys
 
-import config_util  # pylint: disable=F0401
+import config_util  # pylint: disable=import-error
 
 
 # This class doesn't need an __init__ method, so we disable the warning
-# pylint: disable=W0232
+# pylint: disable=no-init
 class Infra(config_util.Config):
   """Basic Config class for the Infrastructure repositories."""
 
   @staticmethod
-  def fetch_spec(_props):
+  def fetch_spec(props):
     return {
       'type': 'gclient_git',
       'gclient_git_spec': {
@@ -21,7 +21,6 @@ class Infra(config_util.Config):
           {
             'name'     : 'infra',
             'url'      : 'https://chromium.googlesource.com/infra/infra.git',
-            'deps_file': '.DEPS.git',
             'managed'  : False,
           }
         ],

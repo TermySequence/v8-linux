@@ -15,6 +15,8 @@
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/trace_event_impl.h"
 
+#include <windows.h>
+
 // The GetProcAddress technique is borrowed from
 // https://github.com/google/UIforETW/tree/master/ETWProviders
 //
@@ -67,7 +69,7 @@ const char* const kFilteredEventGroupNames[] = {
     "gpu",                                             // 0x20
     "input",                                           // 0x40
     "netlog",                                          // 0x80
-    "renderer.scheduler",                              // 0x100
+    "sequence_manager",                                // 0x100
     "toplevel",                                        // 0x200
     "v8",                                              // 0x400
     "disabled-by-default-cc.debug",                    // 0x800

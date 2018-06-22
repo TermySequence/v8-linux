@@ -5,16 +5,16 @@
 #include "base/debug/stack_trace.h"
 
 #include <link.h>
-#include <magenta/crashlogger.h>
-#include <magenta/process.h>
-#include <magenta/syscalls.h>
-#include <magenta/syscalls/definitions.h>
-#include <magenta/syscalls/port.h>
-#include <magenta/types.h>
 #include <stddef.h>
 #include <string.h>
 #include <threads.h>
 #include <unwind.h>
+#include <zircon/crashlogger.h>
+#include <zircon/process.h>
+#include <zircon/syscalls.h>
+#include <zircon/syscalls/definitions.h>
+#include <zircon/syscalls/port.h>
+#include <zircon/types.h>
 
 #include <algorithm>
 #include <iomanip>
@@ -52,7 +52,7 @@ class SymbolMap {
  public:
   struct Entry {
     void* addr;
-    char name[MX_MAX_NAME_LEN + 1];
+    char name[ZX_MAX_NAME_LEN + kProcessNamePrefixLen];
   };
 
   SymbolMap();
@@ -63,7 +63,9 @@ class SymbolMap {
   Entry* GetForAddress(void* address);
 
  private:
-  static const size_t kMaxMapEntries = 64;
+  // Component builds of Chrome pull about 250 shared libraries (on Linux), so
+  // 512 entries should be enough in most cases.
+  static const size_t kMaxMapEntries = 512;
 
   void Populate();
 
@@ -96,27 +98,30 @@ SymbolMap::Entry* SymbolMap::GetForAddress(void* address) {
 }
 
 void SymbolMap::Populate() {
-  mx_handle_t process = mx_process_self();
+  zx_handle_t process = zx_process_self();
 
-  // Get the process' name.
-  char app_name[MX_MAX_NAME_LEN + kProcessNamePrefixLen];
+  // Try to fetch the name of the process' main executable, which was set as the
+  // name of the |process| kernel object.
+  // TODO(wez): Object names can only have up to ZX_MAX_NAME_LEN characters, so
+  // if we keep hitting problems with truncation, find a way to plumb argv[0]
+  // through to here instead, e.g. using CommandLine::GetProgramName().
+  char app_name[arraysize(SymbolMap::Entry::name)];
   strcpy(app_name, kProcessNamePrefix);
-  auto status = mx_object_get_property(
-      process, MX_PROP_NAME, app_name + kProcessNamePrefixLen,
+  zx_status_t status = zx_object_get_property(
+      process, ZX_PROP_NAME, app_name + kProcessNamePrefixLen,
       sizeof(app_name) - kProcessNamePrefixLen);
-  if (status != MX_OK) {
+  if (status != ZX_OK) {
     DPLOG(WARNING)
         << "Couldn't get name, falling back to 'app' for program name: "
         << status;
-    strlcpy(app_name, "app", sizeof(app_name));
+    strlcat(app_name, "app", sizeof(app_name));
   }
 
   // Retrieve the debug info struct.
-  constexpr size_t map_capacity = sizeof(entries_);
   uintptr_t debug_addr;
-  status = mx_object_get_property(process, MX_PROP_PROCESS_DEBUG_ADDR,
+  status = zx_object_get_property(process, ZX_PROP_PROCESS_DEBUG_ADDR,
                                   &debug_addr, sizeof(debug_addr));
-  if (status != MX_OK) {
+  if (status != ZX_OK) {
     DPLOG(ERROR) << "Couldn't get symbol map for process: " << status;
     return;
   }
@@ -131,7 +136,7 @@ void SymbolMap::Populate() {
 
   // Copy the contents of the link map linked list to |entries_|.
   while (lmap != nullptr) {
-    if (count_ == map_capacity) {
+    if (count_ >= arraysize(entries_)) {
       break;
     }
     SymbolMap::Entry* next_entry = &entries_[count_];
@@ -139,8 +144,7 @@ void SymbolMap::Populate() {
 
     next_entry->addr = reinterpret_cast<void*>(lmap->l_addr);
     char* name_to_use = lmap->l_name[0] ? lmap->l_name : app_name;
-    size_t name_len = strnlen(name_to_use, MX_MAX_NAME_LEN);
-    strncpy(next_entry->name, name_to_use, name_len + 1);
+    strlcpy(next_entry->name, name_to_use, sizeof(next_entry->name));
     lmap = lmap->l_next;
   }
 
@@ -173,36 +177,36 @@ void StackTrace::Print() const {
   OutputToStream(&std::cerr);
 }
 
-// Sample stack trace output:
-// #00 0x1527a058aa00 app:/system/base_unittests+0x18bda00
-// #01 0x1527a0254b5c app:/system/base_unittests+0x1587b5c
-// #02 0x15279f446ece app:/system/base_unittests+0x779ece
+// Sample stack trace output is designed to be similar to Fuchsia's crashlogger:
+// bt#00: pc 0x1527a058aa00 (app:/system/base_unittests,0x18bda00)
+// bt#01: pc 0x1527a0254b5c (app:/system/base_unittests,0x1587b5c)
+// bt#02: pc 0x15279f446ece (app:/system/base_unittests,0x779ece)
 // ...
-// #21 0x1527a05b51b4 app:/system/base_unittests+0x18e81b4
-// #22 0x54fdbf3593de libc.so+0x1c3de
-// #23 end
+// bt#21: pc 0x1527a05b51b4 (app:/system/base_unittests,0x18e81b4)
+// bt#22: pc 0x54fdbf3593de (libc.so,0x1c3de)
+// bt#23: end
 void StackTrace::OutputToStream(std::ostream* os) const {
   SymbolMap map;
 
   size_t i = 0;
   for (; (i < count_) && os->good(); ++i) {
-    auto entry = map.GetForAddress(trace_[i]);
+    SymbolMap::Entry* entry = map.GetForAddress(trace_[i]);
     if (entry) {
       size_t offset = reinterpret_cast<uintptr_t>(trace_[i]) -
                       reinterpret_cast<uintptr_t>(entry->addr);
-      *os << "#" << std::setw(2) << std::setfill('0') << i << std::setw(0)
-          << " " << trace_[i] << " " << entry->name << "+0x" << std::hex
-          << offset << std::dec << std::setw(0) << "\n";
+      *os << "bt#" << std::setw(2) << std::setfill('0') << i << std::setw(0)
+          << ": pc " << trace_[i] << " (" << entry->name << ",0x" << std::hex
+          << offset << std::dec << std::setw(0) << ")\n";
     } else {
       // Fallback if the DSO map isn't available.
       // Logged PC values are absolute memory addresses, and the shared object
       // name is not emitted.
-      *os << "#" << std::setw(2) << std::setfill('0') << i << std::setw(0)
-          << trace_[i] << "\n";
+      *os << "bt#" << std::setw(2) << std::setfill('0') << i << std::setw(0)
+          << ": pc " << trace_[i] << "\n";
     }
   }
 
-  (*os) << "#" << std::setw(2) << i << " end\n";
+  (*os) << "bt#" << std::setw(2) << i << ": end\n";
 }
 
 }  // namespace debug

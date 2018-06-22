@@ -9,6 +9,7 @@ import cPickle
 import functools
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -214,7 +215,6 @@ class _Drover(object):
       'packed-refs',
       'remotes',
       'rr-cache',
-      'svn',
   ]
   FILES_TO_COPY = ['config', 'HEAD']
 
@@ -227,7 +227,7 @@ class _Drover(object):
     This is so the new workdir can be a sparse checkout without affecting
     |self._parent_repo|.
     """
-    parent_git_dir = os.path.abspath(self._run_git_command(
+    parent_git_dir = os.path.join(self._parent_repo, self._run_git_command(
         ['rev-parse', '--git-dir']).strip())
     self._workdir = tempfile.mkdtemp(prefix='drover_%s_' % self._branch)
     logging.debug('Creating checkout in %s', self._workdir)
@@ -262,11 +262,13 @@ class _Drover(object):
     # Files that have been deleted between branch and cherry-pick will not have
     # their skip-worktree bit set so set it manually for those files to avoid
     # git status incorrectly listing them as unstaged deletes.
-    repo_status = self._run_git_command(['status', '--porcelain']).splitlines()
+    repo_status = self._run_git_command(
+        ['-c', 'core.quotePath=false', 'status', '--porcelain']).splitlines()
     extra_files = [f[3:] for f in repo_status if f[:2] == ' D']
     if extra_files:
-      self._run_git_command(['update-index', '--skip-worktree', '--'] +
-                            extra_files)
+      self._run_git_command_with_stdin(
+          ['update-index', '--skip-worktree', '--stdin'],
+          stdin='\n'.join(extra_files) + '\n')
 
   def _upload_and_land(self):
     if self._dry_run:
@@ -274,7 +276,9 @@ class _Drover(object):
       return True
 
     self._run_git_command(['reset', '--hard'])
-    self._run_git_command(['cl', 'upload'],
+
+    author = self._run_git_command(['log', '-1', '--format=%ae']).strip()
+    self._run_git_command(['cl', 'upload', '--send-mail', '--tbrs', author],
                           error_message='Upload failed',
                           interactive=True)
 
@@ -293,6 +297,9 @@ class _Drover(object):
       interactive: A bool containing whether the command requires user
           interaction. If false, the command will be provided with no input and
           the output is captured.
+
+    Returns:
+      stdout as a string, or stdout interleaved with stderr if self._verbose
 
     Raises:
       Error: The command failed to complete successfully.
@@ -313,6 +320,35 @@ class _Drover(object):
         raise Error(error_message)
       else:
         raise Error('Command %r failed: %s' % (' '.join(args), e))
+
+  def _run_git_command_with_stdin(self, args, stdin):
+    """Runs a git command with a provided stdin.
+
+    Args:
+      args: A list of strings containing the args to pass to git.
+      stdin: A string to provide on stdin.
+
+    Returns:
+      stdout as a string, or stdout interleaved with stderr if self._verbose
+
+    Raises:
+      Error: The command failed to complete successfully.
+    """
+    cwd = self._workdir if self._workdir else self._parent_repo
+    logging.debug('Running git %s (cwd %r)', ' '.join('%s' % arg
+                                                      for arg in args), cwd)
+
+    # Discard stderr unless verbose is enabled.
+    stderr = None if self._verbose else _DEV_NULL_FILE
+
+    try:
+      popen = subprocess.Popen(['git'] + args, shell=False, cwd=cwd,
+                               stderr=stderr, stdin=subprocess.PIPE)
+      popen.communicate(stdin)
+      if popen.returncode != 0:
+        raise Error('Command %r failed' % ' '.join(args))
+    except OSError as e:
+      raise Error('Command %r failed: %s' % (' '.join(args), e))
 
 
 def cherry_pick_change(branch, revision, parent_repo, dry_run, verbose=False):

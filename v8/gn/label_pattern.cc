@@ -63,8 +63,7 @@ LabelPattern::LabelPattern(Type type,
 
 LabelPattern::LabelPattern(const LabelPattern& other) = default;
 
-LabelPattern::~LabelPattern() {
-}
+LabelPattern::~LabelPattern() = default;
 
 // static
 LabelPattern LabelPattern::GetPattern(const SourceDir& current_dir,
@@ -241,6 +240,16 @@ bool LabelPattern::Matches(const Label& label) const {
       NOTREACHED();
       return false;
   }
+}
+
+// static
+bool LabelPattern::VectorMatches(const std::vector<LabelPattern>& patterns,
+                                 const Label& label) {
+  for (const auto& pattern : patterns) {
+    if (pattern.Matches(label))
+      return true;
+  }
+  return false;
 }
 
 std::string LabelPattern::Describe() const {

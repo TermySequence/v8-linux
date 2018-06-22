@@ -4,16 +4,17 @@
 
 #include "base/test/scoped_mock_time_message_loop_task_runner.h"
 
-#include <deque>
 #include <memory>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/callback_forward.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/test/test_pending_task.h"
 #include "base/time/time.h"
@@ -23,7 +24,7 @@ namespace base {
 namespace {
 
 TaskRunner* GetCurrentTaskRunner() {
-  return MessageLoop::current()->task_runner().get();
+  return MessageLoopCurrent::Get()->task_runner().get();
 }
 
 void AssignTrue(bool* out) {
@@ -31,7 +32,7 @@ void AssignTrue(bool* out) {
 }
 
 // Pops a task from the front of |pending_tasks| and returns it.
-TestPendingTask PopFront(std::deque<TestPendingTask>* pending_tasks) {
+TestPendingTask PopFront(base::circular_deque<TestPendingTask>* pending_tasks) {
   TestPendingTask task = std::move(pending_tasks->front());
   pending_tasks->pop_front();
   return task;
@@ -41,7 +42,7 @@ class ScopedMockTimeMessageLoopTaskRunnerTest : public testing::Test {
  public:
   ScopedMockTimeMessageLoopTaskRunnerTest()
       : original_task_runner_(new TestMockTimeTaskRunner()) {
-    MessageLoop::current()->SetTaskRunner(original_task_runner_);
+    MessageLoopCurrent::Get()->SetTaskRunner(original_task_runner_);
   }
 
  protected:
@@ -62,7 +63,7 @@ class ScopedMockTimeMessageLoopTaskRunnerTest : public testing::Test {
 // after destruction.
 TEST_F(ScopedMockTimeMessageLoopTaskRunnerTest, CurrentTaskRunners) {
   auto scoped_task_runner_ =
-      base::MakeUnique<ScopedMockTimeMessageLoopTaskRunner>();
+      std::make_unique<ScopedMockTimeMessageLoopTaskRunner>();
   EXPECT_EQ(scoped_task_runner_->task_runner(), GetCurrentTaskRunner());
   scoped_task_runner_.reset();
   EXPECT_EQ(original_task_runner(), GetCurrentTaskRunner());
@@ -71,13 +72,13 @@ TEST_F(ScopedMockTimeMessageLoopTaskRunnerTest, CurrentTaskRunners) {
 TEST_F(ScopedMockTimeMessageLoopTaskRunnerTest,
        IncompleteTasksAreCopiedToPreviousTaskRunnerAfterDestruction) {
   auto scoped_task_runner_ =
-      base::MakeUnique<ScopedMockTimeMessageLoopTaskRunner>();
+      std::make_unique<ScopedMockTimeMessageLoopTaskRunner>();
 
   bool task_10_has_run = false;
   bool task_11_has_run = false;
 
-  Closure task_1 = Bind(&DoNothing);
-  Closure task_2 = Bind(&DoNothing);
+  Closure task_1 = DoNothing();
+  Closure task_2 = DoNothing();
   Closure task_10 = Bind(&AssignTrue, &task_10_has_run);
   Closure task_11 = Bind(&AssignTrue, &task_11_has_run);
 
@@ -97,7 +98,7 @@ TEST_F(ScopedMockTimeMessageLoopTaskRunnerTest,
 
   scoped_task_runner_.reset();
 
-  std::deque<TestPendingTask> pending_tasks =
+  base::circular_deque<TestPendingTask> pending_tasks =
       original_task_runner()->TakePendingTasks();
 
   EXPECT_EQ(2U, pending_tasks.size());

@@ -17,9 +17,9 @@
     "  Dependent configs: all_dependent_configs, public_configs\n"
 #define DEPS_VARS \
     "  Deps: data_deps, deps, public_deps\n"
-#define GENERAL_TARGET_VARS \
-    "  General: check_includes, configs, data, inputs, output_name,\n" \
-    "           output_extension, public, sources, testonly, visibility\n"
+#define GENERAL_TARGET_VARS                                                  \
+  "  General: check_includes, configs, data, friend, inputs, output_name,\n" \
+  "           output_extension, public, sources, testonly, visibility\n"
 
 namespace functions {
 
@@ -61,28 +61,31 @@ Value ExecuteGenericTarget(const char* target_type,
 // action ----------------------------------------------------------------------
 
 // Common help paragraph on script runtime execution directories.
-#define SCRIPT_EXECUTION_CONTEXT \
-    "  The script will be executed with the given arguments with the current\n"\
-    "  directory being that of the root build directory. If you pass files\n"\
-    "  to your script, see \"gn help rebase_path\" for how to convert\n" \
-    "  file names to be relative to the build directory (file names in the\n" \
-    "  sources, outputs, and inputs will be all treated as relative to the\n" \
-    "  current build file and converted as needed automatically).\n"
+#define SCRIPT_EXECUTION_CONTEXT                                              \
+  "\n"                                                                        \
+  "  The script will be executed with the given arguments with the current\n" \
+  "  directory being that of the root build directory. If you pass files\n"   \
+  "  to your script, see \"gn help rebase_path\" for how to convert\n"        \
+  "  file names to be relative to the build directory (file names in the\n"   \
+  "  sources, outputs, and inputs will be all treated as relative to the\n"   \
+  "  current build file and converted as needed automatically).\n"
 
 // Common help paragraph on script output directories.
-#define SCRIPT_EXECUTION_OUTPUTS \
-    "  All output files must be inside the output directory of the build.\n" \
-    "  You would generally use |$target_out_dir| or |$target_gen_dir| to\n" \
-    "  reference the output or generated intermediate file directories,\n" \
-    "  respectively.\n"
+#define SCRIPT_EXECUTION_OUTPUTS                                           \
+  "\n"                                                                     \
+  "  All output files must be inside the output directory of the build.\n" \
+  "  You would generally use |$target_out_dir| or |$target_gen_dir| to\n"  \
+  "  reference the output or generated intermediate file directories,\n"   \
+  "  respectively.\n"
 
-#define ACTION_DEPS \
-    "  The \"deps\" and \"public_deps\" for an action will always be\n" \
-    "  completed before any part of the action is run so it can depend on\n" \
-    "  the output of previous steps. The \"data_deps\" will be built if the\n" \
-    "  action is built, but may not have completed before all steps of the\n" \
-    "  action are started. This can give additional parallelism in the build\n"\
-    "  for runtime-only dependencies.\n"
+#define ACTION_DEPS                                                           \
+  "\n"                                                                        \
+  "  The \"deps\" and \"public_deps\" for an action will always be\n"         \
+  "  completed before any part of the action is run so it can depend on\n"    \
+  "  the output of previous steps. The \"data_deps\" will be built if the\n"  \
+  "  action is built, but may not have completed before all steps of the\n"   \
+  "  action are started. This can give additional parallelism in the build\n" \
+  "  for runtime-only dependencies.\n"
 
 const char kAction[] = "action";
 const char kAction_HelpShort[] =
@@ -253,9 +256,9 @@ Value RunActionForEach(Scope* scope,
 
 const char kBundleData[] = "bundle_data";
 const char kBundleData_HelpShort[] =
-    "bundle_data: [iOS/OS X] Declare a target without output.";
+    "bundle_data: [iOS/macOS] Declare a target without output.";
 const char kBundleData_Help[] =
-    R"(bundle_data: [iOS/OS X] Declare a target without output.
+    R"(bundle_data: [iOS/macOS] Declare a target without output.
 
   This target type allows to declare data that is required at runtime. It is
   used to inform "create_bundle" targets of the files to copy into generated
@@ -266,8 +269,8 @@ const char kBundleData_Help[] =
   output. The output must reference a file inside of {{bundle_root_dir}}.
 
   This target can be used on all platforms though it is designed only to
-  generate iOS/OS X bundle. In cross-platform projects, it is advised to put it
-  behind iOS/Mac conditionals.
+  generate iOS/macOS bundle. In cross-platform projects, it is advised to put it
+  behind iOS/macOS conditionals.
 
   See "gn help create_bundle" for more information.
 
@@ -318,11 +321,11 @@ Value RunBundleData(Scope* scope,
 
 const char kCreateBundle[] = "create_bundle";
 const char kCreateBundle_HelpShort[] =
-    "create_bundle: [iOS/OS X] Build an OS X / iOS bundle.";
+    "create_bundle: [iOS/macOS] Build an iOS or macOS bundle.";
 const char kCreateBundle_Help[] =
-    R"(create_bundle: [iOS/OS X] Build an OS X / iOS bundle.
+    R"(create_bundle: [ios/macOS] Build an iOS or macOS bundle.
 
-  This target generates an iOS/OS X bundle (which is a directory with a
+  This target generates an iOS or macOS bundle (which is a directory with a
   well-know structure). This target does not define any sources, instead they
   are computed from all "bundle_data" target this one depends on transitively
   (the recursion stops at "create_bundle" targets).
@@ -331,8 +334,8 @@ const char kCreateBundle_Help[] =
   expansion of {{bundle_*_dir}} rules in "bundle_data" outputs.
 
   This target can be used on all platforms though it is designed only to
-  generate iOS/OS X bundle. In cross-platform projects, it is advised to put it
-  behind iOS/Mac conditionals.
+  generate iOS or macOS bundle. In cross-platform projects, it is advised to put
+  it behind iOS/macOS conditionals.
 
   If a create_bundle is specified as a data_deps for another target, the bundle
   is considered a leaf, and its public and private dependencies will not
@@ -358,17 +361,17 @@ Code signing
 
 Variables
 
-  bundle_root_dir*, bundle_resources_dir*, bundle_executable_dir*,
-  bundle_plugins_dir*, bundle_deps_filter, deps, data_deps, public_deps,
-  visibility, product_type, code_signing_args, code_signing_script,
-  code_signing_sources, code_signing_outputs, xcode_extra_attributes,
-  xcode_test_application_name
+  bundle_root_dir*, bundle_contents_dir*, bundle_resources_dir*,
+  bundle_executable_dir*, bundle_plugins_dir*, bundle_deps_filter, deps,
+  data_deps, public_deps, visibility, product_type, code_signing_args,
+  code_signing_script, code_signing_sources, code_signing_outputs,
+  xcode_extra_attributes, xcode_test_application_name, partial_info_plist
   * = required
 
 Example
 
   # Defines a template to create an application. On most platform, this is just
-  # an alias for an "executable" target, but on iOS/OS X, it builds an
+  # an alias for an "executable" target, but on iOS/macOS, it builds an
   # application bundle.
   template("app") {
     if (!is_ios && !is_mac) {
@@ -390,7 +393,7 @@ Example
       bundle_data("${app_name}_bundle_info_plist") {
         deps = [ ":${app_name}_generate_info_plist" ]
         sources = [ "$gen_path/Info.plist" ]
-        outputs = [ "{{bundle_root_dir}}/Info.plist" ]
+        outputs = [ "{{bundle_contents_dir}}/Info.plist" ]
       }
 
       executable("${app_name}_generate_executable") {
@@ -418,19 +421,21 @@ Example
 
         if (is_ios) {
           bundle_root_dir = "${root_build_dir}/$target_name"
-          bundle_resources_dir = bundle_root_dir
-          bundle_executable_dir = bundle_root_dir
-          bundle_plugins_dir = bundle_root_dir + "/Plugins"
+          bundle_contents_dir = bundle_root_dir
+          bundle_resources_dir = bundle_contents_dir
+          bundle_executable_dir = bundle_contents_dir
+          bundle_plugins_dir = "${bundle_contents_dir}/Plugins"
 
           extra_attributes = {
             ONLY_ACTIVE_ARCH = "YES"
             DEBUG_INFORMATION_FORMAT = "dwarf"
           }
         } else {
-          bundle_root_dir = "${root_build_dir}/target_name/Contents"
-          bundle_resources_dir = bundle_root_dir + "/Resources"
-          bundle_executable_dir = bundle_root_dir + "/MacOS"
-          bundle_plugins_dir = bundle_root_dir + "/Plugins"
+          bundle_root_dir = "${root_build_dir}/target_name"
+          bundle_contents_dir  = "${bundle_root_dir}/Contents"
+          bundle_resources_dir = "${bundle_contents_dir}/Resources"
+          bundle_executable_dir = "${bundle_contents_dir}/MacOS"
+          bundle_plugins_dir = "${bundle_contents_dir}/Plugins"
         }
         deps = [ ":${app_name}_bundle_info_plist" ]
         if (is_ios && code_signing) {
@@ -654,10 +659,9 @@ Value RunSharedLibrary(Scope* scope,
 
 // source_set ------------------------------------------------------------------
 
-extern const char kSourceSet[] = "source_set";
-extern const char kSourceSet_HelpShort[] =
-    "source_set: Declare a source set target.";
-extern const char kSourceSet_Help[] =
+const char kSourceSet[] = "source_set";
+const char kSourceSet_HelpShort[] = "source_set: Declare a source set target.";
+const char kSourceSet_Help[] =
     R"(source_set: Declare a source set target.
 
   A source set is a collection of sources that get compiled, but are not linked
@@ -683,11 +687,7 @@ extern const char kSourceSet_Help[] =
 
 Variables
 
-)"
-    CONFIG_VALUES_VARS_HELP
-    DEPS_VARS
-    DEPENDENT_CONFIG_VARS
-    GENERAL_TARGET_VARS;
+)" CONFIG_VALUES_VARS_HELP DEPS_VARS DEPENDENT_CONFIG_VARS GENERAL_TARGET_VARS;
 
 Value RunSourceSet(Scope* scope,
                    const FunctionCallNode* function,

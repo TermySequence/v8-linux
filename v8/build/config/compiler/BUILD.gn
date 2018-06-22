@@ -94,10 +94,12 @@ declare_args() {
   # branches)
   optimize_for_fuzzing = false
 
-  # Optimize symbol files for maximizing goma cache hit rate. This isn't
-  # on by default when goma is enabled because setting this to true may make
-  # it harder to debug binaries.
-  strip_absolute_paths_from_debug_symbols = false
+  # Optimize symbol files for maximizing goma cache hit rate. This is on by
+  # default only when goma is enabled on Linux because setting this to true may
+  # make it harder to debug binaries.
+  # See below reference for detail.
+  # https://chromium.googlesource.com/chromium/src/+/master/docs/linux_debugging.md#Source-level-debug-with-fdebug-prefix-map
+  strip_absolute_paths_from_debug_symbols = is_linux && use_goma
 
   # Allow projects that wish to stay on C++11 to override Chromium's default.
   use_cxx11 = false
@@ -111,8 +113,24 @@ declare_args() {
 
   # Some configurations have default sample profiles. If this is true and
   # clang_sample_profile_path is empty, we'll fall back to the default.
-  clang_use_default_sample_profile =
-      is_official_build && defined(clang_default_afdo_profile)
+  #
+  # We currently only have default profiles for Chromium in-tree, so we disable
+  # this by default for all downstream projects, since these profiles are likely
+  # nonsensical for said projects.
+  clang_use_default_sample_profile = build_with_chromium && is_official_build &&
+                                     (is_android || is_desktop_linux)
+
+  # Turn this on to have the compiler output extra timing information.
+  compiler_timing = false
+
+  # Set to true to pass --no-rosegment to lld. This is a workaround
+  # for a KI issue in Valgrind,
+  # https://bugs.kde.org/show_bug.cgi?id=384727
+  ro_segment_workaround_for_valgrind = false
+
+  # Turn this on to use ghash feature of lld for faster debug link on Windows.
+  # http://blog.llvm.org/2018/01/improving-link-time-on-windows-with.html
+  use_ghash = false
 }
 
 declare_args() {
@@ -133,12 +151,12 @@ declare_args() {
   # other architectures.
   #
   # lld doesn't have the bug.
-  use_icf =
-      is_posix && !using_sanitizer && !(is_android && use_order_profiling) &&
-      ((use_lld && !is_nacl) ||
-       (use_gold &&
-        ((!is_android && linux_use_bundled_binutils) || is_chromeos ||
-         !(current_cpu == "x86" || current_cpu == "x64"))))
+  use_icf = (is_posix || is_fuchsia) && !using_sanitizer &&
+            !(is_android && use_order_profiling) &&
+            ((use_lld && !is_nacl) ||
+             (use_gold &&
+              ((!is_android && linux_use_bundled_binutils) || is_chromeos ||
+               !(current_cpu == "x86" || current_cpu == "x64"))))
 }
 
 # Apply the default logic for these values if they were not set explicitly.
@@ -218,7 +236,7 @@ config("compiler") {
   # In general, Windows is totally different, but all the other builds share
   # some common GCC configuration.
   if (!is_win) {
-    # Common GCC compiler flags setup.
+    # Common POSIX compiler flags setup.
     # --------------------------------
     cflags += [ "-fno-strict-aliasing" ]  # See http://crbug.com/32204
 
@@ -231,7 +249,7 @@ config("compiler") {
       } else {
         cflags += [ "-fstack-protector" ]
       }
-    } else if (is_posix && !is_chromeos && !is_nacl) {
+    } else if ((is_posix && !is_chromeos && !is_nacl) || is_fuchsia) {
       # TODO(phajdan.jr): Use -fstack-protector-strong when our gcc supports it.
       # See also https://crbug.com/533294
       cflags += [ "--param=ssp-buffer-size=4" ]
@@ -243,6 +261,25 @@ config("compiler") {
         # Not available on aix.
         cflags += [ "-fstack-protector" ]
       }
+    }
+
+    # Linker warnings.
+    if (fatal_linker_warnings && !(is_chromeos && current_cpu == "arm") &&
+        !(is_android && use_order_profiling) && !is_mac && !is_ios &&
+        current_os != "aix") {
+      # TODO(jochen): Enable this on chromeos on arm. http://crbug.com/356580
+      # TODO(lizeb,pasko): Fix link errors when linking with order_profiling=1
+      # crbug.com/485542
+      ldflags += [ "-Wl,--fatal-warnings" ]
+    }
+  } else {
+    cflags += [
+      # Assume UTF-8 by default to avoid code page dependencies.
+      "/utf-8",
+    ]
+    if (is_clang) {
+      # Don't look for includes in %INCLUDE%.
+      cflags += [ "/X" ]
     }
   }
 
@@ -277,9 +314,9 @@ config("compiler") {
     ]
   }
 
-  # Non-Mac Posix compiler flags setup.
+  # Non-Mac Posix and Fuchsia compiler flags setup.
   # -----------------------------------
-  if (is_posix && !(is_mac || is_ios)) {
+  if ((is_posix && !(is_mac || is_ios)) || is_fuchsia) {
     if (enable_profiling) {
       if (!is_debug) {
         cflags += [ "-g" ]
@@ -327,7 +364,7 @@ config("compiler") {
     }
   }
 
-  # Linux/Android common flags setup.
+  # Linux/Android/Fuchsia common flags setup.
   # ---------------------------------
   if (is_linux || is_android || is_fuchsia) {
     if (use_pic) {
@@ -344,20 +381,10 @@ config("compiler") {
       "-Wl,-z,relro",
     ]
     if (!using_sanitizer) {
-      ldflags += [ "-Wl,-z,defs" ]
-
-      # Functions interposed by the sanitizers can make ld think
-      # that some libraries aren't needed when they actually are,
-      # http://crbug.com/234010. As workaround, disable --as-needed.
-      if (!is_nacl && !is_android) {
-        # TODO(pcc): Fix linker bug which requires us to link pthread
-        # unconditionally here (crbug.com/623236).
-        ldflags += [
-          "-Wl,--no-as-needed",
-          "-lpthread",
-        ]
-      }
-      ldflags += [ "-Wl,--as-needed" ]
+      ldflags += [
+        "-Wl,-z,defs",
+        "-Wl,--as-needed",
+      ]
     }
   }
 
@@ -371,7 +398,14 @@ config("compiler") {
     ldflags += [ "--gcc-toolchain=$_rebased_android_toolchain_root" ]
   }
 
-  if (is_posix && use_lld && !is_nacl) {
+  if (((is_posix || is_fuchsia) && use_lld && !is_nacl) ||
+      (target_os == "chromeos" && is_android)) {
+    # NOTE: Some Chrome OS builds globally disable LLD, but they also build some
+    # targets against Android toolchains which should use LLD. Therefore we
+    # explicitly select LLD in these cases.
+    #
+    # TODO(https://crbug.com/837095): This should be cleaned up if/when LLD can
+    # work properly for Chrome OS builds.
     ldflags += [ "-fuse-ld=lld" ]
     if (current_cpu == "arm64") {
       # Reduce the page size from 65536 in order to reduce binary size slightly
@@ -431,13 +465,21 @@ config("compiler") {
   # ------------------------------------
   if (is_clang) {
     cflags += [ "-fcolor-diagnostics" ]
+
+    # Enable -fmerge-all-constants. This used to be the default in clang
+    # for over a decade. It makes clang non-conforming, but is fairly safe
+    # in practice and saves some binary size. We might want to consider
+    # disabling this (https://bugs.llvm.org/show_bug.cgi?id=18538#c13),
+    # but for now it looks like our build might rely on it
+    # (https://crbug.com/829795).
+    cflags += [ "-fmerge-all-constants" ]
   }
 
-  # TODO(hans): Remove this once Clang generates better optimized debug info by
-  # default. https://crbug.com/765793
   if (is_clang && !is_nacl && current_toolchain == host_toolchain &&
       target_os != "chromeos") {
     cflags += [
+      # TODO(hans): Remove this once Clang generates better optimized debug info
+      # by default. https://crbug.com/765793
       "-Xclang",
       "-mllvm",
       "-Xclang",
@@ -521,6 +563,8 @@ config("compiler") {
   }
 
   if (is_mac) {
+    # The system libc++ on Mac doesn't have aligned allocation in C++17.
+    defines += [ "_LIBCPP_HAS_NO_ALIGNED_ALLOCATION" ]
     cflags_cc += [ "-stdlib=libc++" ]
     ldflags += [ "-stdlib=libc++" ]
   }
@@ -599,6 +643,27 @@ config("compiler") {
     }
   }
 
+  if (compiler_timing) {
+    if (is_clang) {
+      if (is_win) {
+        cflags += [ "-Xclang" ]
+      }
+      cflags += [ "-ftime-report" ]
+    } else if (is_win) {
+      cflags += [
+        # "Documented" here:
+        # http://aras-p.info/blog/2017/10/23/Best-unknown-MSVC-flag-d2cgsummary/
+        "/d2cgsummary",
+      ]
+    }
+  }
+
+  # Pass flag to LLD to work around issue in Valgrind related to
+  # location of debug symbols.
+  if (use_lld && ro_segment_workaround_for_valgrind) {
+    ldflags += [ "-Wl,--no-rosegment" ]
+  }
+
   # Pass the same C/C++ flags to the objective C/C++ compiler.
   cflags_objc += cflags_c
   cflags_objcc += cflags_cc
@@ -606,7 +671,7 @@ config("compiler") {
   # Assign any flags set for the C compiler to asmflags so that they are sent
   # to the assembler. The Windows assembler takes different types of flags
   # so only do so for posix platforms.
-  if (is_posix) {
+  if (is_posix || is_fuchsia) {
     asmflags += cflags
     asmflags += cflags_c
   }
@@ -622,7 +687,7 @@ config("compiler_cpu_abi") {
   ldflags = []
   defines = []
 
-  if (is_posix && !(is_mac || is_ios)) {
+  if ((is_posix && !(is_mac || is_ios)) || is_fuchsia) {
     # CPU architecture. We may or may not be doing a cross compile now, so for
     # simplicity we always explicitly set the architecture.
     if (current_cpu == "x64") {
@@ -1059,6 +1124,17 @@ config("runtime_library") {
   defines = []
   configs = []
 
+  # TODO(crbug.com/830987): Come up with a better name for is POSIX + Fuchsia
+  # configuration.
+  #
+  # The order of this config is important: it must appear before
+  # android:runtime_library.  This is to ensure libc++ appears before
+  # libandroid_support in the -isystem include order.  Otherwise, there will be
+  # build errors related to symbols declared in math.h.
+  if (is_posix || is_fuchsia) {
+    configs += [ "//build/config/posix:runtime_library" ]
+  }
+
   # System-specific flags. If your compiler flags apply to one of the
   # categories here, add it to the associated file to keep this shared config
   # smaller.
@@ -1072,10 +1148,6 @@ config("runtime_library") {
     configs += [ "//build/config/mac:runtime_library" ]
   } else if (is_android) {
     configs += [ "//build/config/android:runtime_library" ]
-  }
-
-  if (is_posix) {
-    configs += [ "//build/config/posix:runtime_library" ]
   }
 
   if (is_component_build) {
@@ -1100,11 +1172,6 @@ config("default_warnings") {
     if (fatal_linker_warnings) {
       ldflags += [ "/WX" ]
     }
-
-    cflags += [
-      # Assume UTF-8 by default to avoid code page dependencies.
-      "/utf-8",
-    ]
 
     cflags += [
       # Warnings permanently disabled:
@@ -1229,14 +1296,6 @@ config("default_warnings") {
         exec_script("../../win_is_xtree_patched.py", [], "value") == 0) {
       cflags += [ "/wd4702" ]  # Unreachable code.
     }
-
-    if (is_clang) {
-      cflags += [
-        # TODO(hans): Enable these, http://crbug.com/504657
-        "-Wno-unknown-pragmas",  # http://crbug.com/505314
-        "-Wno-microsoft-cast",  # http://crbug.com/550065
-      ]
-    }
   } else {
     if ((is_mac || is_ios) && !is_nacl) {
       # When compiling Objective-C, warns if a method is used whose
@@ -1278,6 +1337,12 @@ config("default_warnings") {
       # [1] https://gcc.gnu.org/gcc-6/porting_to.html#this-cannot-be-null
       # [2] https://crbug.com/784492#c13
       cflags += [ "-fno-delete-null-pointer-checks" ]
+
+      # -Wcomment gives too many false positives in the case a
+      # backslash ended comment line is followed by a new line of
+      # comments
+      # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61638
+      cflags += [ "-Wno-comments" ]
     }
   }
 
@@ -1309,9 +1374,6 @@ config("default_warnings") {
       # which we no longer use. Check if it makes sense to remove
       # this as well. http://crbug.com/316352
       "-Wno-unneeded-internal-declaration",
-
-      # TODO(hans): Get this cleaned up, http://crbug.com/428099
-      "-Wno-inconsistent-missing-override",
     ]
 
     # use_xcode_clang only refers to the iOS toolchain, host binaries use
@@ -1340,6 +1402,10 @@ config("default_warnings") {
 
         # TODO(hans): https://crbug.com/766891
         "-Wno-null-pointer-arithmetic",
+
+        # Ignore warnings about MSVC optimization pragmas.
+        # TODO(thakis): Only for no_chromium_code? http://crbug.com/505314
+        "-Wno-ignored-pragma-optimize",
       ]
     } else if (use_xcode_clang) {
       cflags += [
@@ -1495,6 +1561,28 @@ config("no_rtti") {
       cflags_cc = [ "-fno-rtti" ]
       cflags_objcc = cflags_cc
     }
+  }
+}
+
+# thin_archive -----------------------------------------------------------------
+#
+# Enables thin archives on posix.  Regular archives directly include the object
+# files used to generate it.  Thin archives merely reference the object files.
+# This makes building them faster since it requires less disk IO, but is
+# inappropriate if you wish to redistribute your static library.
+# This config is added to the global config, so thin archives should already be
+# enabled.  If you want to make a distributable static library, you need to do 2
+# things:
+# 1. Set complete_static_lib so that all dependencies of the library make it
+#    into the library. See `gn help complete_static_lib` for details.
+# 2. Remove the thin_archive config, so that the .a file actually contains all
+#    .o files, instead of just references to .o files in the build directoy
+config("thin_archive") {
+  # Mac and iOS use the mac-specific "libtool" command, not ar, which doesn't
+  # have a "thin archive" mode (it does accept -T, but it means truncating
+  # archive names to 16 characters, which is not what we want).
+  if ((is_posix && !is_nacl && !is_mac && !is_ios) || is_fuchsia) {
+    arflags = [ "-T" ]
   }
 }
 
@@ -1687,7 +1775,7 @@ if (is_win) {
 }
 
 config("default_stack_frames") {
-  if (is_posix) {
+  if (is_posix || is_fuchsia) {
     if (enable_frame_pointers) {
       cflags = [ "-fno-omit-frame-pointer" ]
     } else {
@@ -1906,9 +1994,11 @@ if (is_clang && current_toolchain == default_toolchain) {
   if (clang_sample_profile_path != "") {
     _clang_sample_profile = clang_sample_profile_path
   } else if (clang_use_default_sample_profile) {
-    assert(defined(clang_default_afdo_profile),
-           "This platform has no default sample profiles")
-    _clang_sample_profile = clang_default_afdo_profile
+    assert(build_with_chromium,
+           "Our default profiles currently only apply to Chromium")
+    assert(is_android || is_desktop_linux,
+           "The current platform has no default profile")
+    _clang_sample_profile = rebase_path("//chrome/android/profiles/afdo.prof")
   }
 }
 
@@ -1963,13 +2053,22 @@ config("symbols") {
       cflags = [ "/Zi" ]  # Produce PDB file, no edit and continue.
     }
 
-    if (is_win_fastlink) {
-      assert(!use_lld, "is_win_fastlink=true cannot be used with use_lld=true.")
+    if (is_win_fastlink && !use_lld) {
+      # TODO(hans): is_win_fastlink=true is incompatible with use_lld. However,
+      # some developers might have enabled it manually, so to ease the
+      # transition to lld, just ignore it rather than asserting. Eventually we
+      # want to assert instead.
 
       # Tell VS 2015+ to create a PDB that references debug
       # information in .obj and .lib files instead of copying
       # it all. This flag is incompatible with /PROFILE
       ldflags = [ "/DEBUG:FASTLINK" ]
+    } else if (is_clang && use_lld && use_ghash) {
+      cflags += [
+        "-mllvm",
+        "-emit-codeview-ghash-section",
+      ]
+      ldflags = [ "/DEBUG:GHASH" ]
     } else {
       ldflags = [ "/DEBUG" ]
     }
@@ -1977,7 +2076,7 @@ config("symbols") {
     if (is_clang) {
       # /DEBUG:FASTLINK requires every object file to have standalone debug
       # information.
-      if (is_win_fastlink) {
+      if (is_win_fastlink && !use_lld) {
         cflags += [ "-fstandalone-debug" ]
       } else {
         cflags += [ "-fno-standalone-debug" ]
@@ -2009,7 +2108,13 @@ config("symbols") {
       }
       cflags += [ "-g2" ]
     }
-    if (use_debug_fission && !is_nacl) {
+    if (use_debug_fission && !is_nacl && !is_android) {
+      # NOTE: Some Chrome OS builds globally set |use_debug_fission| to true,
+      # but they also build some targets against Android toolchains which aren't
+      # compatible with it.
+      #
+      # TODO(https://crbug.com/837032): See if we can clean this up by e.g. not
+      # setting use_debug_fission globally.
       cflags += [ "-gsplit-dwarf" ]
     }
     asmflags = cflags
@@ -2060,9 +2165,6 @@ config("minimal_symbols") {
       # TODO(thakis): Consider making clang emit DW_AT_linkage_name in -g1 mode;
       #               failing that consider doing this on non-Android too.
       cflags += [ "-fdebug-info-for-profiling" ]
-      if (strip_debug_info) {
-        ldflags += [ "-Wl,--strip-debug" ]
-      }
     }
 
     # Note: -gsplit-dwarf implicitly turns on -g2 with clang, so don't pass it.
@@ -2089,6 +2191,18 @@ config("default_symbols") {
   } else {
     assert(false)
   }
+
+  # This config is removed by base unittests apk.
+  if (is_android && is_clang && strip_debug_info) {
+    configs += [ ":strip_debug" ]
+  }
+}
+
+config("strip_debug") {
+  if (!defined(ldflags)) {
+    ldflags = []
+  }
+  ldflags += [ "-Wl,--strip-debug" ]
 }
 
 if (is_ios || is_mac) {
@@ -2098,21 +2212,5 @@ if (is_ios || is_mac) {
     common_flags = [ "-fobjc-arc" ]
     cflags_objc = common_flags
     cflags_objcc = common_flags
-  }
-}
-
-# Default linker warnings.
-config("default_fatal_linker_warnings") {
-  ldflags = []
-
-  # Linker warnings.
-  if (!is_win && fatal_linker_warnings &&
-      !(is_chromeos && current_cpu == "arm") &&
-      !(is_android && use_order_profiling) && !is_mac && !is_ios &&
-      current_os != "aix") {
-    # TODO(jochen): Enable this on chromeos on arm. http://crbug.com/356580
-    # TODO(lizeb,pasko): Fix link errors when linking with order_profiling=1
-    # crbug.com/485542
-    ldflags += [ "-Wl,--fatal-warnings" ]
   }
 }

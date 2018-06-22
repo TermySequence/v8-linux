@@ -7,12 +7,28 @@
 #include <math.h>
 
 #include <algorithm>
-#include <memory>
 #include <set>
 
 #include "base/json/json_reader.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/ref_counted_memory.h"
+#include "base/run_loop.h"
 #include "base/strings/pattern.h"
+#include "base/trace_event/trace_buffer.h"
+#include "base/trace_event/trace_config.h"
+#include "base/trace_event/trace_log.h"
 #include "base/values.h"
+
+namespace {
+void OnTraceDataCollected(base::OnceClosure quit_closure,
+                          base::trace_event::TraceResultBuffer* buffer,
+                          const scoped_refptr<base::RefCountedString>& json,
+                          bool has_more_events) {
+  buffer->AddFragment(json->data());
+  if (!has_more_events)
+    std::move(quit_closure).Run();
+}
+}  // namespace
 
 namespace trace_analyzer {
 
@@ -23,18 +39,16 @@ TraceEvent::TraceEvent()
       timestamp(0),
       duration(0),
       phase(TRACE_EVENT_PHASE_BEGIN),
-      other_event(NULL) {
-}
+      other_event(nullptr) {}
 
 TraceEvent::TraceEvent(TraceEvent&& other) = default;
 
-TraceEvent::~TraceEvent() {
-}
+TraceEvent::~TraceEvent() = default;
 
 TraceEvent& TraceEvent::operator=(TraceEvent&& rhs) = default;
 
 bool TraceEvent::SetFromJSON(const base::Value* event_value) {
-  if (event_value->GetType() != base::Value::Type::DICTIONARY) {
+  if (event_value->type() != base::Value::Type::DICTIONARY) {
     LOG(ERROR) << "Value must be Type::DICTIONARY";
     return false;
   }
@@ -42,7 +56,7 @@ bool TraceEvent::SetFromJSON(const base::Value* event_value) {
       static_cast<const base::DictionaryValue*>(event_value);
 
   std::string phase_str;
-  const base::DictionaryValue* args = NULL;
+  const base::DictionaryValue* args = nullptr;
 
   if (!dictionary->GetString("ph", &phase_str)) {
     LOG(ERROR) << "ph is missing from TraceEvent JSON";
@@ -94,6 +108,19 @@ bool TraceEvent::SetFromJSON(const base::Value* event_value) {
   if (require_id && !dictionary->GetString("id", &id)) {
     LOG(ERROR) << "id is missing from ASYNC_BEGIN/ASYNC_END TraceEvent JSON";
     return false;
+  }
+
+  dictionary->GetDouble("tdur", &thread_duration);
+  dictionary->GetDouble("tts", &thread_timestamp);
+  dictionary->GetString("scope", &scope);
+  dictionary->GetString("bind_id", &bind_id);
+  dictionary->GetBoolean("flow_out", &flow_out);
+  dictionary->GetBoolean("flow_in", &flow_in);
+
+  const base::DictionaryValue* id2;
+  if (dictionary->GetDictionary("id2", &id2)) {
+    id2->GetString("global", &global_id2);
+    id2->GetString("local", &local_id2);
   }
 
   // For each argument, copy the type and create a trace_analyzer::TraceValue.
@@ -206,8 +233,7 @@ std::unique_ptr<base::Value> TraceEvent::GetKnownArgAsValue(
 QueryNode::QueryNode(const Query& query) : query_(query) {
 }
 
-QueryNode::~QueryNode() {
-}
+QueryNode::~QueryNode() = default;
 
 // Query
 
@@ -228,19 +254,9 @@ Query::Query(TraceEventMember member, const std::string& arg_name)
       is_pattern_(false) {
 }
 
-Query::Query(const Query& query)
-    : type_(query.type_),
-      operator_(query.operator_),
-      left_(query.left_),
-      right_(query.right_),
-      member_(query.member_),
-      number_(query.number_),
-      string_(query.string_),
-      is_pattern_(query.is_pattern_) {
-}
+Query::Query(const Query& query) = default;
 
-Query::~Query() {
-}
+Query::~Query() = default;
 
 Query Query::String(const std::string& str) {
   return Query(str);
@@ -704,12 +720,12 @@ bool ParseEventsFromJson(const std::string& json,
                          std::vector<TraceEvent>* output) {
   std::unique_ptr<base::Value> root = base::JSONReader::Read(json);
 
-  base::ListValue* root_list = NULL;
+  base::ListValue* root_list = nullptr;
   if (!root.get() || !root->GetAsList(&root_list))
     return false;
 
   for (size_t i = 0; i < root_list->GetSize(); ++i) {
-    base::Value* item = NULL;
+    base::Value* item = nullptr;
     if (root_list->Get(i, &item)) {
       TraceEvent event;
       if (event.SetFromJSON(item))
@@ -727,18 +743,16 @@ bool ParseEventsFromJson(const std::string& json,
 // TraceAnalyzer
 
 TraceAnalyzer::TraceAnalyzer()
-    : ignore_metadata_events_(false),
-      allow_assocation_changes_(true) {}
+    : ignore_metadata_events_(false), allow_association_changes_(true) {}
 
-TraceAnalyzer::~TraceAnalyzer() {
-}
+TraceAnalyzer::~TraceAnalyzer() = default;
 
 // static
 TraceAnalyzer* TraceAnalyzer::Create(const std::string& json_events) {
   std::unique_ptr<TraceAnalyzer> analyzer(new TraceAnalyzer());
   if (analyzer->SetEvents(json_events))
     return analyzer.release();
-  return NULL;
+  return nullptr;
 }
 
 bool TraceAnalyzer::SetEvents(const std::string& json_events) {
@@ -786,7 +800,7 @@ void TraceAnalyzer::AssociateAsyncBeginEndEvents(bool match_pid) {
 void TraceAnalyzer::AssociateEvents(const Query& first,
                                     const Query& second,
                                     const Query& match) {
-  DCHECK(allow_assocation_changes_)
+  DCHECK(allow_association_changes_)
       << "AssociateEvents not allowed after FindEvents";
 
   // Search for matching begin/end event pairs. When a matching end is found,
@@ -849,7 +863,7 @@ void TraceAnalyzer::MergeAssociatedEventArgs() {
 }
 
 size_t TraceAnalyzer::FindEvents(const Query& query, TraceEventVector* output) {
-  allow_assocation_changes_ = false;
+  allow_association_changes_ = false;
   output->clear();
   return FindMatchingEvents(
       raw_events_, query, output, ignore_metadata_events_);
@@ -859,14 +873,14 @@ const TraceEvent* TraceAnalyzer::FindFirstOf(const Query& query) {
   TraceEventVector output;
   if (FindEvents(query, &output) > 0)
     return output.front();
-  return NULL;
+  return nullptr;
 }
 
 const TraceEvent* TraceAnalyzer::FindLastOf(const Query& query) {
   TraceEventVector output;
   if (FindEvents(query, &output) > 0)
     return output.back();
-  return NULL;
+  return nullptr;
 }
 
 const std::string& TraceAnalyzer::GetThreadName(
@@ -887,6 +901,34 @@ void TraceAnalyzer::ParseMetadata() {
     if (string_it != this_event.arg_strings.end())
       thread_names_[this_event.thread] = string_it->second;
   }
+}
+
+// Utility functions for collecting process-local traces and creating a
+// |TraceAnalyzer| from the result.
+
+void Start(const std::string& category_filter_string) {
+  DCHECK(!base::trace_event::TraceLog::GetInstance()->IsEnabled());
+  base::trace_event::TraceLog::GetInstance()->SetEnabled(
+      base::trace_event::TraceConfig(category_filter_string, ""),
+      base::trace_event::TraceLog::RECORDING_MODE);
+}
+
+std::unique_ptr<TraceAnalyzer> Stop() {
+  DCHECK(base::trace_event::TraceLog::GetInstance()->IsEnabled());
+  base::trace_event::TraceLog::GetInstance()->SetDisabled();
+
+  base::trace_event::TraceResultBuffer buffer;
+  base::trace_event::TraceResultBuffer::SimpleOutput trace_output;
+  buffer.SetOutputCallback(trace_output.GetCallback());
+  base::RunLoop run_loop;
+  buffer.Start();
+  base::trace_event::TraceLog::GetInstance()->Flush(
+      base::BindRepeating(&OnTraceDataCollected, run_loop.QuitClosure(),
+                          base::Unretained(&buffer)));
+  run_loop.Run();
+  buffer.Finish();
+
+  return base::WrapUnique(TraceAnalyzer::Create(trace_output.json_output));
 }
 
 // TraceEventVector utility functions.

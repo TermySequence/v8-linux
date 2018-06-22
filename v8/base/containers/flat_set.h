@@ -5,6 +5,8 @@
 #ifndef BASE_CONTAINERS_FLAT_SET_H_
 #define BASE_CONTAINERS_FLAT_SET_H_
 
+#include <functional>
+
 #include "base/containers/flat_tree.h"
 #include "base/template_util.h"
 
@@ -44,11 +46,15 @@ namespace base {
 //
 // Constructors (inputs need not be sorted):
 //   flat_set(InputIterator first, InputIterator last,
-//            FlatContainerDupes, const Compare& compare = Compare());
+//            FlatContainerDupes = KEEP_FIRST_OF_DUPES,
+//            const Compare& compare = Compare());
 //   flat_set(const flat_set&);
 //   flat_set(flat_set&&);
-//   flat_set(std::vector<Key>, FlatContainerDupes);  // Re-use storage.
-//   flat_set(std::initializer_list<value_type> ilist, FlatContainerDupes,
+//   flat_set(std::vector<Key>,
+//            FlatContainerDupes = KEEP_FIRST_OF_DUPES,
+//            const Compare& compare = Compare());  // Re-use storage.
+//   flat_set(std::initializer_list<value_type> ilist,
+//            FlatContainerDupes = KEEP_FIRST_OF_DUPES,
 //            const Compare& comp = Compare());
 //
 // Assignment functions:
@@ -85,7 +91,7 @@ namespace base {
 //   pair<iterator, bool> insert(const key_type&);
 //   pair<iterator, bool> insert(key_type&&);
 //   void                 insert(InputIterator first, InputIterator last,
-//                               FlatContainerDupes);
+//                               FlatContainerDupes = KEEP_FIRST_OF_DUPES);
 //   iterator             insert(const_iterator hint, const key_type&);
 //   iterator             insert(const_iterator hint, key_type&&);
 //   pair<iterator, bool> emplace(Args&&...);
@@ -95,7 +101,7 @@ namespace base {
 //   iterator erase(iterator);
 //   iterator erase(const_iterator);
 //   iterator erase(const_iterator first, const_iterator& last);
-//   template <typename K> size_t erase(const K& key)
+//   template <typename K> size_t erase(const K& key);
 //
 // Comparators (see std::set documentation).
 //   key_compare   key_comp() const;
@@ -105,14 +111,14 @@ namespace base {
 //   template <typename K> size_t                   count(const K&) const;
 //   template <typename K> iterator                 find(const K&);
 //   template <typename K> const_iterator           find(const K&) const;
-//   template <typename K> pair<iterator, iterator> equal_range(K&)
+//   template <typename K> pair<iterator, iterator> equal_range(K&);
 //   template <typename K> iterator                 lower_bound(const K&);
 //   template <typename K> const_iterator           lower_bound(const K&) const;
 //   template <typename K> iterator                 upper_bound(const K&);
 //   template <typename K> const_iterator           upper_bound(const K&) const;
 //
 // General functions:
-//   void swap(flat_set&&)
+//   void swap(flat_set&&);
 //
 // Non-member operators:
 //   bool operator==(const flat_set&, const flat_set);
@@ -122,7 +128,7 @@ namespace base {
 //   bool operator>=(const flat_set&, const flat_set);
 //   bool operator<=(const flat_set&, const flat_set);
 //
-template <class Key, class Compare = ::base::less>
+template <class Key, class Compare = std::less<>>
 using flat_set = typename ::base::internal::flat_tree<
     Key,
     Key,

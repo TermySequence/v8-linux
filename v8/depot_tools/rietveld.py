@@ -21,6 +21,7 @@ import logging
 import re
 import socket
 import ssl
+import StringIO
 import sys
 import time
 import urllib
@@ -71,7 +72,7 @@ class Rietveld(object):
     logging.info('closing issue %d' % issue)
     self.post("/%d/close" % issue, [('xsrf_token', self.xsrf_token())])
 
-  def get_description(self, issue):
+  def get_description(self, issue, force=False):
     """Returns the issue's description.
 
     Converts any CRLF into LF and strip extraneous whitespace.
@@ -92,7 +93,7 @@ class Rietveld(object):
     url = '/%d/patchset/%d/get_depends_on_patchset' % (issue, patchset)
     resp = None
     try:
-      resp = json.loads(self.post(url, []))
+      resp = json.loads(self.get(url))
     except (urllib2.HTTPError, ValueError):
       # The get_depends_on_patchset endpoint does not exist on this Rietveld
       # instance yet. Ignore the error and proceed.
@@ -148,7 +149,7 @@ class Rietveld(object):
           out.append(patch.FilePatchDelete(filename, state['is_binary']))
         else:
           content = self.get_file_content(issue, patchset, state['id'])
-          if not content:
+          if not content or content == 'None':
             # As a precaution due to a bug in upload.py for git checkout, refuse
             # empty files. If it's empty, it's not a binary file.
             raise patch.UnsupportedPatchFormat(
@@ -277,6 +278,12 @@ class Rietveld(object):
         ('xsrf_token', self.xsrf_token()),
         (flag, str(value))])
 
+  def set_flags(self, issue, patchset, flags):
+    return self.post('/%d/edit_flags' % issue, [
+        ('last_patchset', str(patchset)),
+        ('xsrf_token', self.xsrf_token()),
+        ] + [(flag, str(value)) for flag, value in flags.iteritems()])
+
   def search(
       self,
       owner=None, reviewer=None,
@@ -303,6 +310,13 @@ class Rietveld(object):
       'private': private,
       'commit': commit,
     }
+    # The integer values were determined by checking HTML source of Rietveld on
+    # https://codereview.chromium.org/search. See also http://crbug.com/712060.
+    three_state_value_map = {
+        None: 1,   # Unknown.
+        True: 2,   # Yes.
+        False: 3,  # No.
+    }
 
     url = '/search?format=json'
     # Sort the keys mainly to ease testing.
@@ -313,7 +327,7 @@ class Rietveld(object):
     for key in sorted(three_state_keys):
       value = three_state_keys[key]
       if value is not None:
-        url += '&%s=%s' % (key, value)
+        url += '&%s=%d' % (key, three_state_value_map[value])
 
     if keys_only:
       url += '&keys_only=True'
@@ -409,23 +423,20 @@ class Rietveld(object):
         if m:
           # Fake an HTTPError exception. Cheezy. :(
           raise urllib2.HTTPError(
-              request_path, int(m.group(1)), msg, None, None)
+              request_path, int(m.group(1)), msg, None, StringIO.StringIO())
         old_error_exit(msg)
       upload.ErrorExit = trap_http_500
 
       for retry in xrange(self._maxtries):
         try:
           logging.debug('%s' % request_path)
-          result = self.rpc_server.Send(request_path, **kwargs)
-          # Sometimes GAE returns a HTTP 200 but with HTTP 500 as the content.
-          # How nice.
-          return result
+          return self.rpc_server.Send(request_path, **kwargs)
         except urllib2.HTTPError, e:
           if retry >= (self._maxtries - 1):
             raise
-          flake_codes = [500, 502, 503]
+          flake_codes = {500, 502, 503}
           if retry_on_404:
-            flake_codes.append(404)
+            flake_codes.add(404)
           if e.code not in flake_codes:
             raise
         except urllib2.URLError, e:
@@ -440,14 +451,20 @@ class Rietveld(object):
             # The reason can be a string or another exception, e.g.,
             # socket.error or whatever else.
             reason_as_str = str(e.reason)
-            for retry_anyway in [
+            for retry_anyway in (
                 'Name or service not known',
                 'EOF occurred in violation of protocol',
-                'timed out']:
+                'timed out',
+                # See http://crbug.com/601260.
+                '[Errno 10060] A connection attempt failed',
+                '[Errno 104] Connection reset by peer',
+            ):
               if retry_anyway in reason_as_str:
                 return True
             return False  # Assume permanent otherwise.
           if not is_transient():
+            logging.error('Caught urllib2.URLError %s which wasn\'t deemed '
+                          'transient', e.reason)
             raise
         except socket.error, e:
           if retry >= (self._maxtries - 1):
@@ -528,6 +545,11 @@ class OAuthRpcServer(object):
       payload: request is a POST if not None, GET otherwise
       timeout: in seconds
       extra_headers: (dict)
+
+    Returns: the HTTP response body as a string
+
+    Raises:
+      urllib2.HTTPError
     """
     # This method signature should match upload.py:AbstractRpcServer.Send()
     method = 'GET'
@@ -543,7 +565,6 @@ class OAuthRpcServer(object):
     try:
       if timeout:
         self._http.timeout = timeout
-      # TODO(pgervais) implement some kind of retry mechanism (see upload.py).
       url = self.host + request_path
       if kwargs:
         url += "?" + urllib.urlencode(kwargs)
@@ -572,6 +593,11 @@ class OAuthRpcServer(object):
           continue
         break
 
+      if ret[0].status >= 300:
+        raise urllib2.HTTPError(
+            request_path, int(ret[0]['status']), ret[1], None,
+            StringIO.StringIO())
+
       return ret[1]
 
     finally:
@@ -585,7 +611,7 @@ class JwtOAuth2Rietveld(Rietveld):
   access is restricted to service accounts.
   """
   # The parent__init__ is not called on purpose.
-  # pylint: disable=W0231
+  # pylint: disable=super-init-not-called
   def __init__(self,
                url,
                client_email,
@@ -635,11 +661,14 @@ class CachingRietveld(Rietveld):
       function_cache[args] = update(*args)
     return copy.deepcopy(function_cache[args])
 
-  def get_description(self, issue):
-    return self._lookup(
-        'get_description',
-        (issue,),
-        super(CachingRietveld, self).get_description)
+  def get_description(self, issue, force=False):
+    if force:
+      return super(CachingRietveld, self).get_description(issue, force=force)
+    else:
+      return self._lookup(
+          'get_description',
+          (issue,),
+          super(CachingRietveld, self).get_description)
 
   def get_issue_properties(self, issue, messages):
     """Returns the issue properties.
@@ -699,7 +728,7 @@ class ReadOnlyRietveld(object):
             if not self._get_local_changes(issue).get('closed', False) and
             self._get_local_changes(issue).get('commit', True)]
 
-  def close_issue(self, issue):  # pylint:disable=R0201
+  def close_issue(self, issue):  # pylint:disable=no-self-use
     logging.info('ReadOnlyRietveld: closing issue %d' % issue)
     ReadOnlyRietveld._local_changes.setdefault(issue, {})['closed'] = True
 
@@ -717,29 +746,33 @@ class ReadOnlyRietveld(object):
   def get_patch(self, issue, patchset):
     return self._rietveld.get_patch(issue, patchset)
 
-  def update_description(self, issue, description):  # pylint:disable=R0201
+  def update_description(self, issue, description):  # pylint:disable=no-self-use
     logging.info('ReadOnlyRietveld: new description for issue %d: %s' %
         (issue, description))
 
-  def add_comment(self,  # pylint:disable=R0201
+  def add_comment(self,  # pylint:disable=no-self-use
                   issue,
                   message,
                   add_as_reviewer=False):
     logging.info('ReadOnlyRietveld: posting comment "%s" to issue %d' %
         (message, issue))
 
-  def set_flag(self, issue, patchset, flag, value):  # pylint:disable=R0201
+  def set_flag(self, issue, patchset, flag, value):  # pylint:disable=no-self-use
     logging.info('ReadOnlyRietveld: setting flag "%s" to "%s" for issue %d' %
         (flag, value, issue))
     ReadOnlyRietveld._local_changes.setdefault(issue, {})[flag] = value
 
-  def trigger_try_jobs(  # pylint:disable=R0201
+  def set_flags(self, issue, patchset, flags):
+    for flag, value in flags.iteritems():
+      self.set_flag(issue, patchset, flag, value)
+
+  def trigger_try_jobs(  # pylint:disable=no-self-use
       self, issue, patchset, reason, clobber, revision, builders_and_tests,
       master=None, category='cq'):
     logging.info('ReadOnlyRietveld: triggering try jobs %r for issue %d' %
         (builders_and_tests, issue))
 
-  def trigger_distributed_try_jobs(  # pylint:disable=R0201
+  def trigger_distributed_try_jobs(  # pylint:disable=no-self-use
       self, issue, patchset, reason, clobber, revision, masters,
       category='cq'):
     logging.info('ReadOnlyRietveld: triggering try jobs %r for issue %d' %

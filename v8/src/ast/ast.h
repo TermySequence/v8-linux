@@ -11,8 +11,8 @@
 #include "src/ast/modules.h"
 #include "src/ast/variables.h"
 #include "src/bailout-reason.h"
-#include "src/factory.h"
 #include "src/globals.h"
+#include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/label.h"
 #include "src/objects/literal-objects.h"
@@ -97,8 +97,10 @@ namespace internal {
   V(ResolvedProperty)           \
   V(RewritableExpression)       \
   V(Spread)                     \
+  V(StoreInArrayLiteral)        \
   V(SuperCallReference)         \
   V(SuperPropertyReference)     \
+  V(TemplateLiteral)            \
   V(ThisFunction)               \
   V(Throw)                      \
   V(UnaryOperation)             \
@@ -1427,6 +1429,8 @@ class ArrayLiteral final : public AggregateLiteral {
 
   ZoneList<Expression*>* values() const { return values_; }
 
+  int first_spread_index() const { return first_spread_index_; }
+
   bool is_empty() const;
 
   // Populate the depth field and flags, returns the depth.
@@ -1450,16 +1454,6 @@ class ArrayLiteral final : public AggregateLiteral {
   int ComputeFlags(bool disable_mementos = false) const {
     return AggregateLiteral::ComputeFlags(disable_mementos);
   }
-
-  // Provide a mechanism for iterating through values to rewrite spreads.
-  ZoneList<Expression*>::iterator FirstSpreadOrEndValue() const {
-    return (first_spread_index_ >= 0) ? values_->begin() + first_spread_index_
-                                      : values_->end();
-  }
-  ZoneList<Expression*>::iterator BeginValue() const {
-    return values_->begin();
-  }
-  ZoneList<Expression*>::iterator EndValue() const { return values_->end(); }
 
  private:
   friend class AstNodeFactory;
@@ -1946,6 +1940,29 @@ class Spread final : public Expression {
   Expression* expression_;
 };
 
+// The StoreInArrayLiteral node corresponds to the StaInArrayLiteral bytecode.
+// It is used in the rewriting of destructuring assignments that contain an
+// array rest pattern.
+class StoreInArrayLiteral final : public Expression {
+ public:
+  Expression* array() const { return array_; }
+  Expression* index() const { return index_; }
+  Expression* value() const { return value_; }
+
+ private:
+  friend class AstNodeFactory;
+
+  StoreInArrayLiteral(Expression* array, Expression* index, Expression* value,
+                      int position)
+      : Expression(position, kStoreInArrayLiteral),
+        array_(array),
+        index_(index),
+        value_(value) {}
+
+  Expression* array_;
+  Expression* index_;
+  Expression* value_;
+};
 
 class Conditional final : public Expression {
  public:
@@ -2221,23 +2238,11 @@ class FunctionLiteral final : public Expression {
     }
     UNREACHABLE();
   }
-
-  // Only one of {set_inferred_name, set_raw_inferred_name} should be called.
-  void set_inferred_name(Handle<String> inferred_name) {
-    DCHECK(!inferred_name.is_null());
-    inferred_name_ = inferred_name;
-    DCHECK(raw_inferred_name_ == nullptr || raw_inferred_name_->IsEmpty());
-    raw_inferred_name_ = nullptr;
-  }
-
   const AstConsString* raw_inferred_name() { return raw_inferred_name_; }
 
-  void set_raw_inferred_name(const AstConsString* raw_inferred_name) {
-    DCHECK_NOT_NULL(raw_inferred_name);
-    raw_inferred_name_ = raw_inferred_name;
-    DCHECK(inferred_name_.is_null());
-    inferred_name_ = Handle<String>();
-  }
+  // Only one of {set_inferred_name, set_raw_inferred_name} should be called.
+  void set_inferred_name(Handle<String> inferred_name);
+  void set_raw_inferred_name(const AstConsString* raw_inferred_name);
 
   bool pretenure() const { return Pretenure::decode(bit_field_); }
   void set_pretenure() { bit_field_ = Pretenure::update(bit_field_, true); }
@@ -2651,6 +2656,26 @@ class GetTemplateObject final : public Expression {
 
   const ZoneList<const AstRawString*>* cooked_strings_;
   const ZoneList<const AstRawString*>* raw_strings_;
+};
+
+class TemplateLiteral final : public Expression {
+ public:
+  using StringList = ZoneList<const AstRawString*>;
+  using ExpressionList = ZoneList<Expression*>;
+
+  const StringList* string_parts() const { return string_parts_; }
+  const ExpressionList* substitutions() const { return substitutions_; }
+
+ private:
+  friend class AstNodeFactory;
+  TemplateLiteral(const StringList* parts, const ExpressionList* substitutions,
+                  int pos)
+      : Expression(pos, kTemplateLiteral),
+        string_parts_(parts),
+        substitutions_(substitutions) {}
+
+  const StringList* string_parts_;
+  const ExpressionList* substitutions_;
 };
 
 // ----------------------------------------------------------------------------
@@ -3070,6 +3095,12 @@ class AstNodeFactory final BASE_EMBEDDED {
     return new (zone_) Spread(expression, pos, expr_pos);
   }
 
+  StoreInArrayLiteral* NewStoreInArrayLiteral(Expression* array,
+                                              Expression* index,
+                                              Expression* value, int pos) {
+    return new (zone_) StoreInArrayLiteral(array, index, value, pos);
+  }
+
   Conditional* NewConditional(Expression* condition,
                               Expression* then_expression,
                               Expression* else_expression,
@@ -3227,6 +3258,12 @@ class AstNodeFactory final BASE_EMBEDDED {
       const ZoneList<const AstRawString*>* cooked_strings,
       const ZoneList<const AstRawString*>* raw_strings, int pos) {
     return new (zone_) GetTemplateObject(cooked_strings, raw_strings, pos);
+  }
+
+  TemplateLiteral* NewTemplateLiteral(
+      const ZoneList<const AstRawString*>* string_parts,
+      const ZoneList<Expression*>* substitutions, int pos) {
+    return new (zone_) TemplateLiteral(string_parts, substitutions, pos);
   }
 
   ImportCallExpression* NewImportCallExpression(Expression* args, int pos) {

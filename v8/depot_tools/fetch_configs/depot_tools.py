@@ -4,11 +4,11 @@
 
 import sys
 
-import config_util  # pylint: disable=F0401
+import config_util  # pylint: disable=import-error
 
 
 # This class doesn't need an __init__ method, so we disable the warning
-# pylint: disable=W0232
+# pylint: disable=no-init
 class DepotTools(config_util.Config):
   """Basic Config class for DepotTools."""
 
@@ -23,11 +23,8 @@ class DepotTools(config_util.Config):
     }
     spec = {
       'solutions': [solution],
-      'auto': True,
     }
-    checkout_type = 'gclient_git_svn'
-    if props.get('nosvn'):
-      checkout_type = 'gclient_git'
+    checkout_type = 'gclient_git'
     spec_type = '%s_spec' % checkout_type
     return {
       'type': checkout_type,

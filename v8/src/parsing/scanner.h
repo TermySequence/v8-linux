@@ -510,7 +510,7 @@ class Scanner {
 
   // Scans octal escape sequence. Also accepts "\0" decimal escape sequence.
   template <bool capture_raw>
-  uc32 ScanOctalEscape(uc32 c, int length);
+  uc32 ScanOctalEscape(uc32 c, int length, bool in_template_literal);
 
   // Call this after setting source_ to the input.
   void Init() {
@@ -736,19 +736,16 @@ class Scanner {
   Token::Value ScanHtmlComment();
 
   bool ScanDigitsWithNumericSeparators(bool (*predicate)(uc32 ch),
-                                       int start_pos,
                                        bool is_check_first_digit);
-  bool ScanDecimalDigits(int start_pos);
+  bool ScanDecimalDigits();
   // Optimized function to scan decimal number as Smi.
-  bool ScanDecimalAsSmi(int start_pos, uint64_t* value);
-  bool ScanDecimalAsSmiWithNumericSeparators(int start_pos, uint64_t* value);
-  bool ScanHexDigits(int start_pos);
-  bool ScanBinaryDigits(int start_pos);
-  bool ScanSignedInteger(int start_pos);
-  bool ScanOctalDigits(int start_pos);
+  bool ScanDecimalAsSmi(uint64_t* value);
+  bool ScanDecimalAsSmiWithNumericSeparators(uint64_t* value);
+  bool ScanHexDigits();
+  bool ScanBinaryDigits();
+  bool ScanSignedInteger();
+  bool ScanOctalDigits();
   bool ScanImplicitOctalDigits(int start_pos, NumberKind* kind);
-  bool ScanImplicitOctalDigitsWithNumericSeparators(int start_pos,
-                                                    NumberKind* kind);
 
   Token::Value ScanNumber(bool seen_period);
   Token::Value ScanIdentifierOrKeyword();

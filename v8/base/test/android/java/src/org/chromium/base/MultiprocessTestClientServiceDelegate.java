@@ -10,28 +10,26 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.SparseArray;
 
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.base.library_loader.LibraryLoader;
-import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.library_loader.ProcessInitException;
 import org.chromium.base.process_launcher.ChildProcessServiceDelegate;
 import org.chromium.native_test.MainRunner;
 
-/** Implmentation of the ChildProcessServiceDelegate used for the Multiprocess tests. */
+import java.util.List;
+
+/** Implementation of the ChildProcessServiceDelegate used for the Multiprocess tests. */
 public class MultiprocessTestClientServiceDelegate implements ChildProcessServiceDelegate {
     private static final String TAG = "MPTestCSDelegate";
 
     private ITestCallback mTestCallback;
 
     private final ITestController.Stub mTestController = new ITestController.Stub() {
-        @SuppressFBWarnings("DM_EXIT")
         @Override
         public boolean forceStopSynchronous(int exitCode) {
             System.exit(exitCode);
             return true;
         }
 
-        @SuppressFBWarnings("DM_EXIT")
         @Override
         public void forceStop(int exitCode) {
             System.exit(exitCode);
@@ -47,17 +45,22 @@ public class MultiprocessTestClientServiceDelegate implements ChildProcessServic
     public void onServiceBound(Intent intent) {}
 
     @Override
-    public void onConnectionSetup(Bundle connectionBundle, IBinder callback) {
-        mTestCallback = ITestCallback.Stub.asInterface(callback);
+    public void onConnectionSetup(Bundle connectionBundle, List<IBinder> callbacks) {
+        mTestCallback = ITestCallback.Stub.asInterface(callbacks.get(0));
     }
 
     @Override
     public void onDestroy() {}
 
     @Override
+    public void preloadNativeLibrary(Context hostContext) {
+        LibraryLoader.getInstance().preloadNow();
+    }
+
+    @Override
     public boolean loadNativeLibrary(Context hostContext) {
         try {
-            LibraryLoader.get(LibraryProcessType.PROCESS_CHILD).loadNow();
+            LibraryLoader.getInstance().loadNow();
             return true;
         } catch (ProcessInitException pie) {
             Log.e(TAG, "Unable to load native libraries.", pie);

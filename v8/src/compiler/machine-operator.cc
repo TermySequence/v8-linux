@@ -38,7 +38,9 @@ LoadRepresentation LoadRepresentationOf(Operator const* op) {
   DCHECK(IrOpcode::kLoad == op->opcode() ||
          IrOpcode::kProtectedLoad == op->opcode() ||
          IrOpcode::kWord32AtomicLoad == op->opcode() ||
-         IrOpcode::kPoisonedLoad == op->opcode());
+         IrOpcode::kWord64AtomicLoad == op->opcode() ||
+         IrOpcode::kPoisonedLoad == op->opcode() ||
+         IrOpcode::kUnalignedLoad == op->opcode());
   return OpParameter<LoadRepresentation>(op);
 }
 
@@ -47,11 +49,6 @@ StoreRepresentation const& StoreRepresentationOf(Operator const* op) {
   DCHECK(IrOpcode::kStore == op->opcode() ||
          IrOpcode::kProtectedStore == op->opcode());
   return OpParameter<StoreRepresentation>(op);
-}
-
-UnalignedLoadRepresentation UnalignedLoadRepresentationOf(Operator const* op) {
-  DCHECK_EQ(IrOpcode::kUnalignedLoad, op->opcode());
-  return OpParameter<UnalignedLoadRepresentation>(op);
 }
 
 UnalignedStoreRepresentation const& UnalignedStoreRepresentationOf(
@@ -82,7 +79,8 @@ StackSlotRepresentation const& StackSlotRepresentationOf(Operator const* op) {
 }
 
 MachineRepresentation AtomicStoreRepresentationOf(Operator const* op) {
-  DCHECK_EQ(IrOpcode::kWord32AtomicStore, op->opcode());
+  DCHECK(IrOpcode::kWord32AtomicStore == op->opcode() ||
+         IrOpcode::kWord64AtomicStore == op->opcode());
   return OpParameter<MachineRepresentation>(op);
 }
 
@@ -225,10 +223,10 @@ MachineType AtomicOpRepresentationOf(Operator const* op) {
   V(Float64ExtractHighWord32, Operator::kNoProperties, 1, 0, 1)           \
   V(Float64InsertLowWord32, Operator::kNoProperties, 2, 0, 1)             \
   V(Float64InsertHighWord32, Operator::kNoProperties, 2, 0, 1)            \
-  V(SpeculationPoison, Operator::kNoProperties, 0, 0, 1)                  \
   V(LoadStackPointer, Operator::kNoProperties, 0, 0, 1)                   \
   V(LoadFramePointer, Operator::kNoProperties, 0, 0, 1)                   \
   V(LoadParentFramePointer, Operator::kNoProperties, 0, 0, 1)             \
+  V(LoadRootsPointer, Operator::kNoProperties, 0, 0, 1)                   \
   V(Int32PairAdd, Operator::kNoProperties, 4, 0, 2)                       \
   V(Int32PairSub, Operator::kNoProperties, 4, 0, 2)                       \
   V(Int32PairMul, Operator::kNoProperties, 4, 0, 2)                       \
@@ -412,6 +410,10 @@ MachineType AtomicOpRepresentationOf(Operator const* op) {
   V(kWord16)                          \
   V(kWord32)
 
+#define ATOMIC64_REPRESENTATION_LIST(V) \
+  ATOMIC_REPRESENTATION_LIST(V)         \
+  V(kWord64)
+
 #define SIMD_LANE_OP_LIST(V) \
   V(F32x4, 4)                \
   V(I32x4, 4)                \
@@ -476,9 +478,9 @@ struct MachineOperatorGlobalCache {
               "PoisonedLoad", 2, 1, 1, 1, 1, 0, MachineType::Type()) {}       \
   };                                                                          \
   struct UnalignedLoad##Type##Operator final                                  \
-      : public Operator1<UnalignedLoadRepresentation> {                       \
+      : public Operator1<LoadRepresentation> {                                \
     UnalignedLoad##Type##Operator()                                           \
-        : Operator1<UnalignedLoadRepresentation>(                             \
+        : Operator1<LoadRepresentation>(                                      \
               IrOpcode::kUnalignedLoad,                                       \
               Operator::kNoDeopt | Operator::kNoThrow | Operator::kNoWrite,   \
               "UnalignedLoad", 2, 1, 1, 1, 1, 0, MachineType::Type()) {}      \
@@ -581,6 +583,19 @@ struct MachineOperatorGlobalCache {
   ATOMIC_TYPE_LIST(ATOMIC_LOAD)
 #undef ATOMIC_LOAD
 
+#define ATOMIC_LOAD(Type)                                                   \
+  struct Word64AtomicLoad##Type##Operator final                             \
+      : public Operator1<LoadRepresentation> {                              \
+    Word64AtomicLoad##Type##Operator()                                      \
+        : Operator1<LoadRepresentation>(                                    \
+              IrOpcode::kWord64AtomicLoad,                                  \
+              Operator::kNoDeopt | Operator::kNoThrow | Operator::kNoWrite, \
+              "Word64AtomicLoad", 2, 1, 1, 1, 1, 0, MachineType::Type()) {} \
+  };                                                                        \
+  Word64AtomicLoad##Type##Operator kWord64AtomicLoad##Type;
+  ATOMIC64_TYPE_LIST(ATOMIC_LOAD)
+#undef ATOMIC_LOAD
+
 #define ATOMIC_STORE(Type)                                                 \
   struct Word32AtomicStore##Type##Operator                                 \
       : public Operator1<MachineRepresentation> {                          \
@@ -595,6 +610,20 @@ struct MachineOperatorGlobalCache {
   ATOMIC_REPRESENTATION_LIST(ATOMIC_STORE)
 #undef ATOMIC_STORE
 
+#define ATOMIC_STORE(Type)                                                 \
+  struct Word64AtomicStore##Type##Operator                                 \
+      : public Operator1<MachineRepresentation> {                          \
+    Word64AtomicStore##Type##Operator()                                    \
+        : Operator1<MachineRepresentation>(                                \
+              IrOpcode::kWord64AtomicStore,                                \
+              Operator::kNoDeopt | Operator::kNoRead | Operator::kNoThrow, \
+              "Word64AtomicStore", 3, 1, 1, 0, 1, 0,                       \
+              MachineRepresentation::Type) {}                              \
+  };                                                                       \
+  Word64AtomicStore##Type##Operator kWord64AtomicStore##Type;
+  ATOMIC64_REPRESENTATION_LIST(ATOMIC_STORE)
+#undef ATOMIC_STORE
+
 #define ATOMIC_OP(op, type)                                                    \
   struct op##type##Operator : public Operator1<MachineType> {                  \
     op##type##Operator()                                                       \
@@ -603,13 +632,13 @@ struct MachineOperatorGlobalCache {
                                  3, 1, 1, 1, 1, 0, MachineType::type()) {}     \
   };                                                                           \
   op##type##Operator k##op##type;
-#define ATOMIC_OP_LIST(type)            \
-  ATOMIC_OP(Word32AtomicExchange, type) \
-  ATOMIC_OP(Word32AtomicAdd, type)      \
-  ATOMIC_OP(Word32AtomicSub, type)      \
-  ATOMIC_OP(Word32AtomicAnd, type)      \
-  ATOMIC_OP(Word32AtomicOr, type)       \
-  ATOMIC_OP(Word32AtomicXor, type)
+#define ATOMIC_OP_LIST(type)       \
+  ATOMIC_OP(Word32AtomicAdd, type) \
+  ATOMIC_OP(Word32AtomicSub, type) \
+  ATOMIC_OP(Word32AtomicAnd, type) \
+  ATOMIC_OP(Word32AtomicOr, type)  \
+  ATOMIC_OP(Word32AtomicXor, type) \
+  ATOMIC_OP(Word32AtomicExchange, type)
   ATOMIC_TYPE_LIST(ATOMIC_OP_LIST)
 #undef ATOMIC_OP_LIST
 #define ATOMIC64_OP_LIST(type)     \
@@ -617,7 +646,8 @@ struct MachineOperatorGlobalCache {
   ATOMIC_OP(Word64AtomicSub, type) \
   ATOMIC_OP(Word64AtomicAnd, type) \
   ATOMIC_OP(Word64AtomicOr, type)  \
-  ATOMIC_OP(Word64AtomicXor, type)
+  ATOMIC_OP(Word64AtomicXor, type) \
+  ATOMIC_OP(Word64AtomicExchange, type)
   ATOMIC64_TYPE_LIST(ATOMIC64_OP_LIST)
 #undef ATOMIC64_OP_LIST
 #undef ATOMIC_OP
@@ -634,6 +664,20 @@ struct MachineOperatorGlobalCache {
   Word32AtomicCompareExchange##Type##Operator                                  \
       kWord32AtomicCompareExchange##Type;
   ATOMIC_TYPE_LIST(ATOMIC_COMPARE_EXCHANGE)
+#undef ATOMIC_COMPARE_EXCHANGE
+
+#define ATOMIC_COMPARE_EXCHANGE(Type)                                          \
+  struct Word64AtomicCompareExchange##Type##Operator                           \
+      : public Operator1<MachineType> {                                        \
+    Word64AtomicCompareExchange##Type##Operator()                              \
+        : Operator1<MachineType>(IrOpcode::kWord64AtomicCompareExchange,       \
+                                 Operator::kNoDeopt | Operator::kNoThrow,      \
+                                 "Word64AtomicCompareExchange", 4, 1, 1, 1, 1, \
+                                 0, MachineType::Type()) {}                    \
+  };                                                                           \
+  Word64AtomicCompareExchange##Type##Operator                                  \
+      kWord64AtomicCompareExchange##Type;
+  ATOMIC64_TYPE_LIST(ATOMIC_COMPARE_EXCHANGE)
 #undef ATOMIC_COMPARE_EXCHANGE
 
   // The {BitcastWordToTagged} operator must not be marked as pure (especially
@@ -656,6 +700,38 @@ struct MachineOperatorGlobalCache {
                    "BitcastTaggedToWord", 1, 1, 1, 1, 1, 0) {}
   };
   BitcastTaggedToWordOperator kBitcastTaggedToWord;
+
+  struct BitcastMaybeObjectToWordOperator : public Operator {
+    BitcastMaybeObjectToWordOperator()
+        : Operator(IrOpcode::kBitcastTaggedToWord,
+                   Operator::kEliminatable | Operator::kNoWrite,
+                   "BitcastMaybeObjectToWord", 1, 1, 1, 1, 1, 0) {}
+  };
+  BitcastMaybeObjectToWordOperator kBitcastMaybeObjectToWord;
+
+  struct TaggedPoisonOnSpeculation : public Operator {
+    TaggedPoisonOnSpeculation()
+        : Operator(IrOpcode::kTaggedPoisonOnSpeculation,
+                   Operator::kEliminatable | Operator::kNoWrite,
+                   "TaggedPoisonOnSpeculation", 1, 1, 1, 1, 1, 0) {}
+  };
+  TaggedPoisonOnSpeculation kTaggedPoisonOnSpeculation;
+
+  struct Word32PoisonOnSpeculation : public Operator {
+    Word32PoisonOnSpeculation()
+        : Operator(IrOpcode::kWord32PoisonOnSpeculation,
+                   Operator::kEliminatable | Operator::kNoWrite,
+                   "Word32PoisonOnSpeculation", 1, 1, 1, 1, 1, 0) {}
+  };
+  Word32PoisonOnSpeculation kWord32PoisonOnSpeculation;
+
+  struct Word64PoisonOnSpeculation : public Operator {
+    Word64PoisonOnSpeculation()
+        : Operator(IrOpcode::kWord64PoisonOnSpeculation,
+                   Operator::kEliminatable | Operator::kNoWrite,
+                   "Word64PoisonOnSpeculation", 1, 1, 1, 1, 1, 0) {}
+  };
+  Word64PoisonOnSpeculation kWord64PoisonOnSpeculation;
 
   struct SpeculationFenceOperator : public Operator {
     SpeculationFenceOperator()
@@ -707,8 +783,7 @@ MachineOperatorBuilder::MachineOperatorBuilder(
          word == MachineRepresentation::kWord64);
 }
 
-const Operator* MachineOperatorBuilder::UnalignedLoad(
-    UnalignedLoadRepresentation rep) {
+const Operator* MachineOperatorBuilder::UnalignedLoad(LoadRepresentation rep) {
 #define LOAD(Type)                       \
   if (rep == MachineType::Type()) {      \
     return &cache_.kUnalignedLoad##Type; \
@@ -853,6 +928,10 @@ const Operator* MachineOperatorBuilder::BitcastTaggedToWord() {
   return &cache_.kBitcastTaggedToWord;
 }
 
+const Operator* MachineOperatorBuilder::BitcastMaybeObjectToWord() {
+  return &cache_.kBitcastMaybeObjectToWord;
+}
+
 const Operator* MachineOperatorBuilder::DebugAbort() {
   return &cache_.kDebugAbort;
 }
@@ -958,6 +1037,40 @@ const Operator* MachineOperatorBuilder::Word32AtomicXor(MachineType rep) {
   UNREACHABLE();
 }
 
+const Operator* MachineOperatorBuilder::TaggedPoisonOnSpeculation() {
+  return &cache_.kTaggedPoisonOnSpeculation;
+}
+
+const Operator* MachineOperatorBuilder::Word32PoisonOnSpeculation() {
+  return &cache_.kWord32PoisonOnSpeculation;
+}
+
+const Operator* MachineOperatorBuilder::Word64PoisonOnSpeculation() {
+  return &cache_.kWord64PoisonOnSpeculation;
+}
+
+const Operator* MachineOperatorBuilder::Word64AtomicLoad(
+    LoadRepresentation rep) {
+#define LOAD(Type)                          \
+  if (rep == MachineType::Type()) {         \
+    return &cache_.kWord64AtomicLoad##Type; \
+  }
+  ATOMIC64_TYPE_LIST(LOAD)
+#undef LOAD
+  UNREACHABLE();
+}
+
+const Operator* MachineOperatorBuilder::Word64AtomicStore(
+    MachineRepresentation rep) {
+#define STORE(kRep)                          \
+  if (rep == MachineRepresentation::kRep) {  \
+    return &cache_.kWord64AtomicStore##kRep; \
+  }
+  ATOMIC64_REPRESENTATION_LIST(STORE)
+#undef STORE
+  UNREACHABLE();
+}
+
 const Operator* MachineOperatorBuilder::Word64AtomicAdd(MachineType rep) {
 #define ADD(kRep)                          \
   if (rep == MachineType::kRep()) {        \
@@ -1005,6 +1118,27 @@ const Operator* MachineOperatorBuilder::Word64AtomicXor(MachineType rep) {
   }
   ATOMIC64_TYPE_LIST(XOR)
 #undef XOR
+  UNREACHABLE();
+}
+
+const Operator* MachineOperatorBuilder::Word64AtomicExchange(MachineType rep) {
+#define EXCHANGE(kRep)                          \
+  if (rep == MachineType::kRep()) {             \
+    return &cache_.kWord64AtomicExchange##kRep; \
+  }
+  ATOMIC64_TYPE_LIST(EXCHANGE)
+#undef EXCHANGE
+  UNREACHABLE();
+}
+
+const Operator* MachineOperatorBuilder::Word64AtomicCompareExchange(
+    MachineType rep) {
+#define COMPARE_EXCHANGE(kRep)                         \
+  if (rep == MachineType::kRep()) {                    \
+    return &cache_.kWord64AtomicCompareExchange##kRep; \
+  }
+  ATOMIC64_TYPE_LIST(COMPARE_EXCHANGE)
+#undef COMPARE_EXCHANGE
   UNREACHABLE();
 }
 
@@ -1072,6 +1206,7 @@ const Operator* MachineOperatorBuilder::S8x16Shuffle(
 #undef ATOMIC_TYPE_LIST
 #undef ATOMIC64_TYPE_LIST
 #undef ATOMIC_REPRESENTATION_LIST
+#undef ATOMIC64_REPRESENTATION_LIST
 #undef SIMD_LANE_OP_LIST
 #undef SIMD_FORMAT_LIST
 #undef STACK_SLOT_CACHED_SIZES_ALIGNMENTS_LIST

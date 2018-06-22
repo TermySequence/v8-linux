@@ -28,7 +28,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitAllocationSite(Map* map,
                                                       AllocationSite* object) {
   int size = AllocationSite::BodyDescriptorWeak::SizeOf(map, object);
-  AllocationSite::BodyDescriptorWeak::IterateBody(object, size, this);
+  AllocationSite::BodyDescriptorWeak::IterateBody(map, object, size, this);
   return size;
 }
 
@@ -38,7 +38,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitBytecodeArray(Map* map,
                                                      BytecodeArray* array) {
   int size = BytecodeArray::BodyDescriptor::SizeOf(map, array);
-  BytecodeArray::BodyDescriptor::IterateBody(array, size, this);
+  BytecodeArray::BodyDescriptor::IterateBody(map, array, size, this);
   array->MakeOlder();
   return size;
 }
@@ -48,7 +48,7 @@ template <FixedArrayVisitationMode fixed_array_mode,
 int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
     VisitCodeDataContainer(Map* map, CodeDataContainer* object) {
   int size = CodeDataContainer::BodyDescriptorWeak::SizeOf(map, object);
-  CodeDataContainer::BodyDescriptorWeak::IterateBody(object, size, this);
+  CodeDataContainer::BodyDescriptorWeak::IterateBody(map, object, size, this);
   return size;
 }
 
@@ -71,7 +71,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
     heap_->TracePossibleWrapper(object);
   }
   int size = JSObject::BodyDescriptor::SizeOf(map, object);
-  JSObject::BodyDescriptor::IterateBody(object, size, this);
+  JSObject::BodyDescriptor::IterateBody(map, object, size, this);
   return size;
 }
 
@@ -81,7 +81,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitJSFunction(Map* map,
                                                   JSFunction* object) {
   int size = JSFunction::BodyDescriptorWeak::SizeOf(map, object);
-  JSFunction::BodyDescriptorWeak::IterateBody(object, size, this);
+  JSFunction::BodyDescriptorWeak::IterateBody(map, object, size, this);
   return size;
 }
 
@@ -98,7 +98,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
   // Skip visiting the backing hash table containing the mappings and the
   // pointer to the other enqueued weak collections, both are post-processed.
   int size = JSWeakCollection::BodyDescriptorWeak::SizeOf(map, weak_collection);
-  JSWeakCollection::BodyDescriptorWeak::IterateBody(weak_collection, size,
+  JSWeakCollection::BodyDescriptorWeak::IterateBody(map, weak_collection, size,
                                                     this);
 
   // Partially initialized weak collection is enqueued, but table is ignored.
@@ -119,14 +119,13 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitMap(Map* map, Map* object) {
   // When map collection is enabled we have to mark through map's transitions
   // and back pointers in a special way to make these links weak.
+  int size = Map::BodyDescriptor::SizeOf(map, object);
   if (object->CanTransition()) {
     MarkMapContents(object);
   } else {
-    VisitPointers(object,
-                  HeapObject::RawField(object, Map::kPointerFieldsBeginOffset),
-                  HeapObject::RawField(object, Map::kPointerFieldsEndOffset));
+    Map::BodyDescriptor::IterateBody(map, object, size, this);
   }
-  return Map::BodyDescriptor::SizeOf(map, object);
+  return size;
 }
 
 template <FixedArrayVisitationMode fixed_array_mode,
@@ -135,7 +134,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitNativeContext(Map* map,
                                                      Context* context) {
   int size = Context::BodyDescriptorWeak::SizeOf(map, context);
-  Context::BodyDescriptorWeak::IterateBody(context, size, this);
+  Context::BodyDescriptorWeak::IterateBody(map, context, size, this);
   return size;
 }
 
@@ -145,7 +144,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitTransitionArray(Map* map,
                                                        TransitionArray* array) {
   int size = TransitionArray::BodyDescriptor::SizeOf(map, array);
-  TransitionArray::BodyDescriptor::IterateBody(array, size, this);
+  TransitionArray::BodyDescriptor::IterateBody(map, array, size, this);
   collector_->AddTransitionArray(array);
   return size;
 }
@@ -241,6 +240,8 @@ void MarkingVisitor<fixed_array_mode, retaining_path_mode,
   collector_->RecordRelocSlot(host, rinfo, object);
   if (!host->IsWeakObject(object)) {
     MarkObject(host, object);
+  } else if (!marking_state()->IsBlackOrGrey(object)) {
+    collector_->AddWeakObjectInCode(object, host);
   }
 }
 
@@ -325,7 +326,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
       }
     }
   } else {
-    FixedArray::BodyDescriptor::IterateBody(object, object_size, this);
+    FixedArray::BodyDescriptor::IterateBody(map, object, object_size, this);
   }
   return object_size;
 }
@@ -357,8 +358,8 @@ void MarkingVisitor<fixed_array_mode, retaining_path_mode,
   // Mark the pointer fields of the Map. Since the transitions array has
   // been marked already, it is fine that one of these fields contains a
   // pointer to it.
-  VisitPointers(map, HeapObject::RawField(map, Map::kPointerFieldsBeginOffset),
-                HeapObject::RawField(map, Map::kPointerFieldsEndOffset));
+  Map::BodyDescriptor::IterateBody(
+      map->map(), map, Map::BodyDescriptor::SizeOf(map->map(), map), this);
 }
 
 void MarkCompactCollector::MarkObject(HeapObject* host, HeapObject* obj) {
@@ -378,6 +379,16 @@ void MarkCompactCollector::MarkRootObject(Root root, HeapObject* obj) {
     }
   }
 }
+
+#ifdef ENABLE_MINOR_MC
+
+void MinorMarkCompactCollector::MarkRootObject(HeapObject* obj) {
+  if (heap_->InNewSpace(obj) && non_atomic_marking_state_.WhiteToGrey(obj)) {
+    worklist_->Push(kMainThread, obj);
+  }
+}
+
+#endif
 
 void MarkCompactCollector::MarkExternallyReferencedObject(HeapObject* obj) {
   if (marking_state()->WhiteToGrey(obj)) {

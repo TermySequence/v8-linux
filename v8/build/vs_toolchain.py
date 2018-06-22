@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from gn_helpers import ToGNString
 
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -93,8 +94,8 @@ def SetEnvironmentAndGetRuntimeDllDirs():
     bitness = platform.architecture()[0]
     # When running 64-bit python the x64 DLLs will be in System32
     x64_path = 'System32' if bitness == '64bit' else 'Sysnative'
-    x64_path = os.path.join(r'C:\Windows', x64_path)
-    vs_runtime_dll_dirs = [x64_path, r'C:\Windows\SysWOW64']
+    x64_path = os.path.join(os.path.expandvars('%windir%'), x64_path)
+    vs_runtime_dll_dirs = [x64_path, os.path.expandvars('%windir%/SysWOW64')]
 
   return vs_runtime_dll_dirs
 
@@ -154,9 +155,12 @@ def DetectVisualStudioPath():
     # For now we use a hardcoded default with an environment variable override.
     for path in (
         os.environ.get('vs2017_install'),
-        r'C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise',
-        r'C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional',
-        r'C:\Program Files (x86)\Microsoft Visual Studio\2017\Community'):
+        os.path.expandvars('%ProgramFiles(x86)%'
+                           '/Microsoft Visual Studio/2017/Enterprise'),
+        os.path.expandvars('%ProgramFiles(x86)%'
+                           '/Microsoft Visual Studio/2017/Professional'),
+        os.path.expandvars('%ProgramFiles(x86)%'
+                           '/Microsoft Visual Studio/2017/Community')):
       if path and os.path.exists(path):
         return path
 
@@ -328,9 +332,11 @@ def _CopyDebugger(target_dir, target_cpu):
       if is_optional:
         continue
       else:
+        # TODO(crbug.com/773476): remove version requirement.
         raise Exception('%s not found in "%s"\r\nYou must install the '
                         '"Debugging Tools for Windows" feature from the Windows'
-                        ' 10 SDK.' % (debug_file, full_path))
+                        ' 10 SDK. You must use v10.0.17134.0. of the SDK'
+                        % (debug_file, full_path))
     target_path = os.path.join(target_dir, debug_file)
     _CopyRuntimeImpl(target_path, full_path)
 
@@ -340,9 +346,12 @@ def _GetDesiredVsToolchainHashes():
   to build with."""
   env_version = GetVisualStudioVersion()
   if env_version == '2017':
-    # VS 2017 Update 3.2 with 10.0.15063.468 SDK, patched setenv.cmd, and
-    # 10.0.16299.15 debuggers.
-    return ['1180cb75833ea365097e279efb2d5d7a42dee4b0']
+    # VS 2017 Update 7.1 (15.7.1) with 10.0.17134.12 SDK.
+    toolchain_hash = '5454e45bf3764c03d3fc1024b3bf5bc41e3ab62c'
+    # Third parties that do not have access to the canonical toolchain can map
+    # canonical toolchain version to their own toolchain versions.
+    toolchain_hash_mapping_key = 'GYP_MSVS_HASH_%s' % toolchain_hash
+    return [os.environ.get(toolchain_hash_mapping_key, toolchain_hash)]
   raise Exception('Unsupported VS version %s' % env_version)
 
 
@@ -431,7 +440,8 @@ def SetEnvironmentAndGetSDKDir():
 
   # If WINDOWSSDKDIR is not set, search the default SDK path and set it.
   if not 'WINDOWSSDKDIR' in os.environ:
-    default_sdk_path = 'C:\\Program Files (x86)\\Windows Kits\\10'
+    default_sdk_path = os.path.expandvars('%ProgramFiles(x86)%'
+                                          '\\Windows Kits\\10')
     if os.path.isdir(default_sdk_path):
       os.environ['WINDOWSSDKDIR'] = default_sdk_path
 
@@ -444,17 +454,17 @@ def GetToolchainDir():
   runtime_dll_dirs = SetEnvironmentAndGetRuntimeDllDirs()
   win_sdk_dir = SetEnvironmentAndGetSDKDir()
 
-  print '''vs_path = "%s"
-sdk_path = "%s"
-vs_version = "%s"
-wdk_dir = "%s"
-runtime_dirs = "%s"
+  print '''vs_path = %s
+sdk_path = %s
+vs_version = %s
+wdk_dir = %s
+runtime_dirs = %s
 ''' % (
-      NormalizePath(os.environ['GYP_MSVS_OVERRIDE_PATH']),
-      win_sdk_dir,
-      GetVisualStudioVersion(),
-      NormalizePath(os.environ.get('WDK_DIR', '')),
-      os.path.pathsep.join(runtime_dll_dirs or ['None']))
+      ToGNString(NormalizePath(os.environ['GYP_MSVS_OVERRIDE_PATH'])),
+      ToGNString(win_sdk_dir),
+      ToGNString(GetVisualStudioVersion()),
+      ToGNString(NormalizePath(os.environ.get('WDK_DIR', ''))),
+      ToGNString(os.path.pathsep.join(runtime_dll_dirs or ['None'])))
 
 
 def main():

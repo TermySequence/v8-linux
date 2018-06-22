@@ -107,6 +107,10 @@ extern const char kBundleRootDir[];
 extern const char kBundleRootDir_HelpShort[];
 extern const char kBundleRootDir_Help[];
 
+extern const char kBundleContentsDir[];
+extern const char kBundleContentsDir_HelpShort[];
+extern const char kBundleContentsDir_Help[];
+
 extern const char kBundleResourcesDir[];
 extern const char kBundleResourcesDir_HelpShort[];
 extern const char kBundleResourcesDir_Help[];
@@ -191,9 +195,9 @@ extern const char kDeps[];
 extern const char kDeps_HelpShort[];
 extern const char kDeps_Help[];
 
-extern const char kXcodeExtraAttributes[];
-extern const char kXcodeExtraAttributes_HelpShort[];
-extern const char kXcodeExtraAttributes_Help[];
+extern const char kFriend[];
+extern const char kFriend_HelpShort[];
+extern const char kFriend_Help[];
 
 extern const char kIncludeDirs[];
 extern const char kIncludeDirs_HelpShort[];
@@ -234,6 +238,10 @@ extern const char kOutputPrefixOverride_Help[];
 extern const char kOutputs[];
 extern const char kOutputs_HelpShort[];
 extern const char kOutputs_Help[];
+
+extern const char kPartialInfoPlist[];
+extern const char kPartialInfoPlist_HelpShort[];
+extern const char kPartialInfoPlist_Help[];
 
 extern const char kPool[];
 extern const char kPool_HelpShort[];
@@ -294,6 +302,10 @@ extern const char kVisibility_Help[];
 extern const char kWriteRuntimeDeps[];
 extern const char kWriteRuntimeDeps_HelpShort[];
 extern const char kWriteRuntimeDeps_Help[];
+
+extern const char kXcodeExtraAttributes[];
+extern const char kXcodeExtraAttributes_HelpShort[];
+extern const char kXcodeExtraAttributes_Help[];
 
 // -----------------------------------------------------------------------------
 

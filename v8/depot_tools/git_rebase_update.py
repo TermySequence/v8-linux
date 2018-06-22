@@ -31,8 +31,8 @@ def find_return_branch_workdir():
   These values may persist across multiple invocations of rebase-update, if
   rebase-update runs into a conflict mid-way.
   """
-  return_branch = git.config(STARTING_BRANCH_KEY)
-  workdir = git.config(STARTING_WORKDIR_KEY)
+  return_branch = git.get_config(STARTING_BRANCH_KEY)
+  workdir = git.get_config(STARTING_WORKDIR_KEY)
   if not return_branch:
     workdir = os.getcwd()
     git.set_config(STARTING_WORKDIR_KEY, workdir)
@@ -49,9 +49,8 @@ def fetch_remotes(branch_tree):
   remotes = set()
   tag_set = git.tags()
   fetchspec_map = {}
-  all_fetchspec_configs = git.run(
-      'config', '--get-regexp', r'^remote\..*\.fetch').strip()
-  for fetchspec_config in all_fetchspec_configs.splitlines():
+  all_fetchspec_configs = git.get_config_regexp(r'^remote\..*\.fetch')
+  for fetchspec_config in all_fetchspec_configs:
     key, _, fetchspec = fetchspec_config.partition(' ')
     dest_spec = fetchspec.partition(':')[2]
     remote_name = key.split('.')[1]
@@ -162,6 +161,7 @@ def rebase_branch(branch, parent, start_hash):
     if not rebase_ret.success:
       # TODO(iannucci): Find collapsible branches in a smarter way?
       print "Failed! Attempting to squash", branch, "...",
+      sys.stdout.flush()
       squash_branch = branch+"_squash_attempt"
       git.run('checkout', '-b', squash_branch)
       git.squash_current_branch(merge_base=start_hash)
@@ -312,8 +312,16 @@ def main(args=None):
           % (return_branch, root_branch)
         )
       git.run('checkout', root_branch)
+
+    # return_workdir may also not be there any more.
     if return_workdir:
-      os.chdir(return_workdir)
+      try:
+        os.chdir(return_workdir)
+      except OSError as e:
+        print (
+          "Unable to return to original workdir %r: %s"
+          % (return_workdir, e)
+        )
     git.set_config(STARTING_BRANCH_KEY, '')
     git.set_config(STARTING_WORKDIR_KEY, '')
 

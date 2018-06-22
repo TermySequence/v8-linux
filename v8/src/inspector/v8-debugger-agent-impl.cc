@@ -80,7 +80,8 @@ enum class BreakpointType {
   kByScriptHash,
   kByScriptId,
   kDebugCommand,
-  kMonitorCommand
+  kMonitorCommand,
+  kBreakpointAtEntry
 };
 
 String16 generateBreakpointId(BreakpointType type,
@@ -97,25 +98,39 @@ String16 generateBreakpointId(BreakpointType type,
   return builder.toString();
 }
 
+String16 generateBreakpointId(BreakpointType type,
+                              v8::Local<v8::Function> function) {
+  String16Builder builder;
+  builder.appendNumber(static_cast<int>(type));
+  builder.append(':');
+  builder.appendNumber(v8::debug::GetDebuggingId(function));
+  return builder.toString();
+}
+
 bool parseBreakpointId(const String16& breakpointId, BreakpointType* type,
                        String16* scriptSelector = nullptr,
                        int* lineNumber = nullptr, int* columnNumber = nullptr) {
   size_t typeLineSeparator = breakpointId.find(':');
   if (typeLineSeparator == String16::kNotFound) return false;
+
+  int rawType = breakpointId.substring(0, typeLineSeparator).toInteger();
+  if (rawType < static_cast<int>(BreakpointType::kByUrl) ||
+      rawType > static_cast<int>(BreakpointType::kBreakpointAtEntry)) {
+    return false;
+  }
+  if (type) *type = static_cast<BreakpointType>(rawType);
+  if (rawType == static_cast<int>(BreakpointType::kDebugCommand) ||
+      rawType == static_cast<int>(BreakpointType::kMonitorCommand) ||
+      rawType == static_cast<int>(BreakpointType::kBreakpointAtEntry)) {
+    // The script and source position is not encoded in this case.
+    return true;
+  }
+
   size_t lineColumnSeparator = breakpointId.find(':', typeLineSeparator + 1);
   if (lineColumnSeparator == String16::kNotFound) return false;
   size_t columnSelectorSeparator =
       breakpointId.find(':', lineColumnSeparator + 1);
   if (columnSelectorSeparator == String16::kNotFound) return false;
-
-  if (type) {
-    int rawType = breakpointId.substring(0, typeLineSeparator).toInteger();
-    if (rawType < static_cast<int>(BreakpointType::kByUrl) ||
-        rawType > static_cast<int>(BreakpointType::kMonitorCommand)) {
-      return false;
-    }
-    *type = static_cast<BreakpointType>(rawType);
-  }
   if (scriptSelector) {
     *scriptSelector = breakpointId.substring(columnSelectorSeparator + 1);
   }
@@ -156,8 +171,9 @@ String16 breakpointHint(const V8DebuggerScript& script, int lineNumber,
   return hint;
 }
 
-void adjustBreakpointLocation(V8DebuggerScript& script, const String16& hint,
-                              int* lineNumber, int* columnNumber) {
+void adjustBreakpointLocation(const V8DebuggerScript& script,
+                              const String16& hint, int* lineNumber,
+                              int* columnNumber) {
   if (*lineNumber < script.startLine() || *lineNumber > script.endLine())
     return;
   if (hint.isEmpty()) return;
@@ -239,26 +255,33 @@ Response buildScopes(v8::debug::ScopeIterator* iterator,
                      std::unique_ptr<Array<Scope>>* scopes) {
   *scopes = Array<Scope>::create();
   if (!injectedScript) return Response::OK();
+  if (iterator->Done()) return Response::OK();
+
+  String16 scriptId = String16::fromInteger(iterator->GetScriptId());
+
   for (; !iterator->Done(); iterator->Advance()) {
     std::unique_ptr<RemoteObject> object;
     Response result = injectedScript->wrapObject(
         iterator->GetObject(), kBacktraceObjectGroup, false, false, &object);
     if (!result.isSuccess()) return result;
+
     auto scope = Scope::create()
                      .setType(scopeType(iterator->GetType()))
                      .setObject(std::move(object))
                      .build();
-    v8::Local<v8::Function> closure = iterator->GetFunction();
-    if (!closure.IsEmpty()) {
-      String16 name = toProtocolStringWithTypeCheck(closure->GetDebugName());
-      if (!name.isEmpty()) scope->setName(name);
-      String16 scriptId = String16::fromInteger(closure->ScriptId());
+
+    String16 name =
+        toProtocolStringWithTypeCheck(iterator->GetFunctionDebugName());
+    if (!name.isEmpty()) scope->setName(name);
+
+    if (iterator->HasLocationInfo()) {
       v8::debug::Location start = iterator->GetStartLocation();
       scope->setStartLocation(protocol::Debugger::Location::create()
                                   .setScriptId(scriptId)
                                   .setLineNumber(start.GetLineNumber())
                                   .setColumnNumber(start.GetColumnNumber())
                                   .build());
+
       v8::debug::Location end = iterator->GetEndLocation();
       scope->setEndLocation(protocol::Debugger::Location::create()
                                 .setScriptId(scriptId)
@@ -395,12 +418,10 @@ Response V8DebuggerAgentImpl::disable() {
                       v8::debug::NoBreakOnException);
   m_state->setInteger(DebuggerAgentState::asyncCallStackDepth, 0);
 
-  if (isPaused()) m_debugger->continueProgram(m_session->contextGroupId());
   if (m_breakpointsActive) {
     m_debugger->setBreakpointsActive(false);
     m_breakpointsActive = false;
   }
-  m_debugger->disable();
   m_blackboxedPositions.clear();
   m_blackboxPattern.reset();
   resetBlackboxedStateCache();
@@ -417,6 +438,7 @@ Response V8DebuggerAgentImpl::disable() {
   m_state->remove(DebuggerAgentState::blackboxPattern);
   m_enabled = false;
   m_state->setBoolean(DebuggerAgentState::debuggerEnabled, false);
+  m_debugger->disable();
   return Response::OK();
 }
 
@@ -466,7 +488,7 @@ Response V8DebuggerAgentImpl::setSkipAllPauses(bool skip) {
   return Response::OK();
 }
 
-static bool matches(V8InspectorImpl* inspector, V8DebuggerScript& script,
+static bool matches(V8InspectorImpl* inspector, const V8DebuggerScript& script,
                     BreakpointType type, const String16& selector) {
   switch (type) {
     case BreakpointType::kByUrl:
@@ -585,6 +607,30 @@ Response V8DebuggerAgentImpl::setBreakpoint(
                                       location->getLineNumber(),
                                       location->getColumnNumber(0));
   if (!*actualLocation) return Response::Error("Could not resolve breakpoint");
+  *outBreakpointId = breakpointId;
+  return Response::OK();
+}
+
+Response V8DebuggerAgentImpl::setBreakpointOnFunctionCall(
+    const String16& functionObjectId, Maybe<String16> optionalCondition,
+    String16* outBreakpointId) {
+  InjectedScript::ObjectScope scope(m_session, functionObjectId);
+  Response response = scope.initialize();
+  if (!response.isSuccess()) return response;
+  if (!scope.object()->IsFunction()) {
+    return Response::Error("Could not find function with given id");
+  }
+  v8::Local<v8::Function> function =
+      v8::Local<v8::Function>::Cast(scope.object());
+  String16 breakpointId =
+      generateBreakpointId(BreakpointType::kBreakpointAtEntry, function);
+  if (m_breakpointIdToDebuggerBreakpointIds.find(breakpointId) !=
+      m_breakpointIdToDebuggerBreakpointIds.end()) {
+    return Response::Error("Breakpoint at specified location already exists.");
+  }
+  v8::Local<v8::String> condition =
+      toV8String(m_isolate, optionalCondition.fromMaybe(String16()));
+  setBreakpointImpl(breakpointId, function, condition);
   *outBreakpointId = breakpointId;
   return Response::OK();
 }
@@ -821,6 +867,19 @@ V8DebuggerAgentImpl::setBreakpointImpl(const String16& breakpointId,
       .build();
 }
 
+void V8DebuggerAgentImpl::setBreakpointImpl(const String16& breakpointId,
+                                            v8::Local<v8::Function> function,
+                                            v8::Local<v8::String> condition) {
+  v8::debug::BreakpointId debuggerBreakpointId;
+  if (!v8::debug::SetFunctionBreakpoint(function, condition,
+                                        &debuggerBreakpointId)) {
+    return;
+  }
+  m_debuggerBreakpointIdToBreakpointId[debuggerBreakpointId] = breakpointId;
+  m_breakpointIdToDebuggerBreakpointIds[breakpointId].push_back(
+      debuggerBreakpointId);
+}
+
 Response V8DebuggerAgentImpl::searchInContent(
     const String16& scriptId, const String16& query,
     Maybe<bool> optionalCaseSensitive, Maybe<bool> optionalIsRegex,
@@ -1051,7 +1110,8 @@ Response V8DebuggerAgentImpl::evaluateOnCallFrame(
     const String16& callFrameId, const String16& expression,
     Maybe<String16> objectGroup, Maybe<bool> includeCommandLineAPI,
     Maybe<bool> silent, Maybe<bool> returnByValue, Maybe<bool> generatePreview,
-    Maybe<bool> throwOnSideEffect, std::unique_ptr<RemoteObject>* result,
+    Maybe<bool> throwOnSideEffect, Maybe<double> timeout,
+    std::unique_ptr<RemoteObject>* result,
     Maybe<protocol::Runtime::ExceptionDetails>* exceptionDetails) {
   if (!isPaused()) return Response::Error(kDebuggerNotPaused);
   InjectedScript::CallFrameScope scope(m_session, callFrameId);
@@ -1065,8 +1125,17 @@ Response V8DebuggerAgentImpl::evaluateOnCallFrame(
   if (it->Done()) {
     return Response::Error("Could not find call frame with given id");
   }
-  v8::MaybeLocal<v8::Value> maybeResultValue = it->Evaluate(
-      toV8String(m_isolate, expression), throwOnSideEffect.fromMaybe(false));
+
+  v8::MaybeLocal<v8::Value> maybeResultValue;
+  {
+    V8InspectorImpl::EvaluateScope evaluateScope(m_isolate);
+    if (timeout.isJust()) {
+      response = evaluateScope.setTimeout(timeout.fromJust() / 1000.0);
+      if (!response.isSuccess()) return response;
+    }
+    maybeResultValue = it->Evaluate(toV8String(m_isolate, expression),
+                                    throwOnSideEffect.fromMaybe(false));
+  }
   // Re-initialize after running client's code, as it could have destroyed
   // context or session.
   response = scope.initialize();
@@ -1282,7 +1351,7 @@ Response V8DebuggerAgentImpl::currentCallFrames(
     auto frame =
         CallFrame::create()
             .setCallFrameId(callFrameId)
-            .setFunctionName(toProtocolString(iterator->GetFunctionName()))
+            .setFunctionName(toProtocolString(iterator->GetFunctionDebugName()))
             .setLocation(std::move(location))
             .setUrl(url)
             .setScopeChain(std::move(scopes))
@@ -1603,29 +1672,26 @@ void V8DebuggerAgentImpl::breakProgram(
   }
 }
 
-void V8DebuggerAgentImpl::setBreakpointAt(const String16& scriptId,
-                                          int lineNumber, int columnNumber,
-                                          BreakpointSource source,
-                                          const String16& condition) {
+void V8DebuggerAgentImpl::setBreakpointFor(v8::Local<v8::Function> function,
+                                           v8::Local<v8::String> condition,
+                                           BreakpointSource source) {
   String16 breakpointId = generateBreakpointId(
       source == DebugCommandBreakpointSource ? BreakpointType::kDebugCommand
                                              : BreakpointType::kMonitorCommand,
-      scriptId, lineNumber, columnNumber);
+      function);
   if (m_breakpointIdToDebuggerBreakpointIds.find(breakpointId) !=
       m_breakpointIdToDebuggerBreakpointIds.end()) {
     return;
   }
-  setBreakpointImpl(breakpointId, scriptId, condition, lineNumber,
-                    columnNumber);
+  setBreakpointImpl(breakpointId, function, condition);
 }
 
-void V8DebuggerAgentImpl::removeBreakpointAt(const String16& scriptId,
-                                             int lineNumber, int columnNumber,
-                                             BreakpointSource source) {
+void V8DebuggerAgentImpl::removeBreakpointFor(v8::Local<v8::Function> function,
+                                              BreakpointSource source) {
   String16 breakpointId = generateBreakpointId(
       source == DebugCommandBreakpointSource ? BreakpointType::kDebugCommand
                                              : BreakpointType::kMonitorCommand,
-      scriptId, lineNumber, columnNumber);
+      function);
   removeBreakpointImpl(breakpointId);
 }
 

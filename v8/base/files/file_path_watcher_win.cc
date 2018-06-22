@@ -15,6 +15,8 @@
 #include "base/time/time.h"
 #include "base/win/object_watcher.h"
 
+#include <windows.h>
+
 namespace base {
 
 namespace {
@@ -282,7 +284,7 @@ void FilePathWatcherImpl::DestroyWatch() {
 
 FilePathWatcher::FilePathWatcher() {
   sequence_checker_.DetachFromSequence();
-  impl_ = MakeUnique<FilePathWatcherImpl>();
+  impl_ = std::make_unique<FilePathWatcherImpl>();
 }
 
 }  // namespace base

@@ -25,7 +25,7 @@ class IterateAndScavengePromotedObjectsVisitor final : public ObjectVisitor {
                             Object** end) final {
     for (Object** slot = start; slot < end; ++slot) {
       Object* target = *slot;
-      DCHECK(!Internals::HasWeakHeapObjectTag(target));
+      DCHECK(!HasWeakHeapObjectTag(target));
       if (target->IsHeapObject()) {
         HandleSlot(host, reinterpret_cast<Address>(slot),
                    HeapObject::cast(target));
@@ -103,7 +103,7 @@ void Scavenger::IterateAndScavengePromotedObject(HeapObject* target, int size) {
       is_compacting_ &&
       heap()->incremental_marking()->atomic_marking_state()->IsBlack(target);
   IterateAndScavengePromotedObjectsVisitor visitor(heap(), this, record_slots);
-  target->IterateBody(target->map()->instance_type(), size, &visitor);
+  target->IterateBodyFast(target->map(), size, &visitor);
 }
 
 void Scavenger::AddPageToSweeperIfNecessary(MemoryChunk* page) {
@@ -125,7 +125,7 @@ void Scavenger::ScavengePage(MemoryChunk* page) {
   RememberedSet<OLD_TO_NEW>::IterateTyped(
       page, [this](SlotType type, Address host_addr, Address addr) {
         return UpdateTypedSlotHelper::UpdateTypedSlot(
-            heap_->isolate(), type, addr, [this](MaybeObject** addr) {
+            type, addr, [this](MaybeObject** addr) {
               return CheckAndScavengeObject(heap(),
                                             reinterpret_cast<Address>(addr));
             });
@@ -183,7 +183,7 @@ void Scavenger::Finalize() {
 
 void RootScavengeVisitor::VisitRootPointer(Root root, const char* description,
                                            Object** p) {
-  DCHECK(!Internals::HasWeakHeapObjectTag(*p));
+  DCHECK(!HasWeakHeapObjectTag(*p));
   ScavengePointer(p);
 }
 
@@ -195,7 +195,7 @@ void RootScavengeVisitor::VisitRootPointers(Root root, const char* description,
 
 void RootScavengeVisitor::ScavengePointer(Object** p) {
   Object* object = *p;
-  DCHECK(!Internals::HasWeakHeapObjectTag(object));
+  DCHECK(!HasWeakHeapObjectTag(object));
   if (!heap_->InNewSpace(object)) return;
 
   scavenger_->ScavengeObject(reinterpret_cast<HeapObjectReference**>(p),

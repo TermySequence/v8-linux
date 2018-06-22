@@ -28,9 +28,13 @@ enum RegClass : uint8_t {
 
 enum RegPairHalf : uint8_t { kLowWord, kHighWord };
 
+static inline constexpr bool needs_reg_pair(ValueType type) {
+  return kNeedI64RegPair && type == kWasmI64;
+}
+
 // TODO(clemensh): Use a switch once we require C++14 support.
 static inline constexpr RegClass reg_class_for(ValueType type) {
-  return kNeedI64RegPair && type == kWasmI64  // i64 on 32 bit
+  return needs_reg_pair(type)  // i64 on 32 bit
              ? kGpRegPair
              : type == kWasmI32 || type == kWasmI64  // int types
                    ? kGpReg
@@ -99,11 +103,10 @@ class LiftoffRegister {
     }
   }
 
-  static LiftoffRegister ForPair(LiftoffRegister low, LiftoffRegister high) {
+  static LiftoffRegister ForPair(Register low, Register high) {
     DCHECK(kNeedI64RegPair);
     DCHECK_NE(low, high);
-    storage_t combined_code = low.gp().code() |
-                              high.gp().code() << kBitsPerGpRegCode |
+    storage_t combined_code = low.code() | high.code() << kBitsPerGpRegCode |
                               1 << (2 * kBitsPerGpRegCode);
     return LiftoffRegister(combined_code);
   }
@@ -230,6 +233,8 @@ class LiftoffRegList {
     }
     return (regs_ & (storage_t{1} << reg.liftoff_code())) != 0;
   }
+  bool has(Register reg) const { return has(LiftoffRegister(reg)); }
+  bool has(DoubleRegister reg) const { return has(LiftoffRegister(reg)); }
 
   constexpr bool is_empty() const { return regs_ == 0; }
 
@@ -284,12 +289,13 @@ class LiftoffRegList {
 
   template <typename... Regs>
   static LiftoffRegList ForRegs(Regs... regs) {
-    std::array<LiftoffRegister, sizeof...(regs)> regs_arr{
-        {LiftoffRegister(regs)...}};
     LiftoffRegList list;
-    for (LiftoffRegister reg : regs_arr) list.set(reg);
+    for (LiftoffRegister reg : {LiftoffRegister(regs)...}) list.set(reg);
     return list;
   }
+
+  RegList GetGpList() { return regs_ & kGpMask; }
+  RegList GetFpList() { return (regs_ & kFpMask) >> kAfterMaxLiftoffGpRegCode; }
 
  private:
   storage_t regs_ = 0;
@@ -306,6 +312,16 @@ static constexpr LiftoffRegList kFpCacheRegList =
 
 static constexpr LiftoffRegList GetCacheRegList(RegClass rc) {
   return rc == kGpReg ? kGpCacheRegList : kFpCacheRegList;
+}
+
+inline std::ostream& operator<<(std::ostream& os, LiftoffRegList reglist) {
+  os << "{";
+  for (bool first = true; !reglist.is_empty(); first = false) {
+    LiftoffRegister reg = reglist.GetFirstRegSet();
+    reglist.clear(reg);
+    os << (first ? "" : ", ") << reg;
+  }
+  return os << "}";
 }
 
 }  // namespace wasm
