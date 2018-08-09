@@ -36,7 +36,7 @@ $(patterns): $(gn) v8/src/*.cc v8/src/*.h
 $(gn): v8/gn/*.cc v8/gn/*.h
 	mkdir -p $(gndir)
 	cp -r v8/gn v8/tools
-	(cd v8/tools/gn/ && ./bootstrap/bootstrap.py -s -v)
+	(cd v8/tools/gn/ && CFLAGS= CXXFLAGS= LDFLAGS= ./bootstrap/bootstrap.py -s -v)
 	cp -p v8/out/Release/gn $(gn)
 
 clean:
