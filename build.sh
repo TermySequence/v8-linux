@@ -43,4 +43,7 @@ export PATH=$(pwd)/depot_tools:$PATH
 CHROMIUM_BUILDTOOLS_PATH=./buildtools/ gn gen $builddir --args="$v8conf"
 mkdir -p $builddir/gen/shim_headers/icui18n_shim/third_party/icu/source/i18n/unicode
 mkdir -p $builddir/gen/shim_headers/icuuc_shim/third_party/icu/source/common/unicode
+
+# The job limit is intended to reduce memory usage
+# (OOM's have been seen on distro build systems)
 ninja -vvv -C $builddir -j2
