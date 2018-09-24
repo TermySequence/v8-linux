@@ -1,5 +1,11 @@
-ARCH ?= x64
-BUILDDIR ?= .
+export ARCH ?= x64
+export BUILDDIR ?= out.gn/$(ARCH).release
+export JOBS ?= 2
+
+export CC ?= gcc
+export CXX ?= g++
+export LD ?= $(CXX)
+export AR ?= gcc-ar
 
 targets = \
     $(BUILDDIR)/obj/libv8_libplatform.a \
@@ -18,8 +24,7 @@ patterns = \
     $(BUILDDIR)/obj/%_libbase.a \
     $(BUILDDIR)/obj/%_libsampler.a
 
-gndir := v8/buildtools/linux64
-gn := $(gndir)/gn
+gn := gn/out/gn
 
 .PHONY: all clean
 .NOTPARALLEL: all clean
@@ -27,17 +32,10 @@ gn := $(gndir)/gn
 all: $(targets)
 
 $(patterns): $(gn) v8/src/*.cc v8/src/*.h
-	echo ARCH=$(ARCH)
-	echo BUILDDIR=$(BUILDDIR)
-	echo CFLAGS=$(CFLAGS)
-	echo LDFLAGS=$(LDFLAGS)
-	./build.sh $(BUILDDIR) $(ARCH) "$(CFLAGS)" "$(LDFLAGS)" $(ARMFP)
+	./build.sh
 
-$(gn): v8/gn/*.cc v8/gn/*.h
-	mkdir -p $(gndir)
-	cp -r v8/gn v8/tools
-	(cd v8/tools/gn/ && CFLAGS= CXXFLAGS= LDFLAGS= ./bootstrap/bootstrap.py -s -v)
-	cp -p v8/out/Release/gn $(gn)
+$(gn): gn/tools/gn/*.cc gn/tools/gn/*.h
+	./bootstrap.sh
 
 clean:
-	./clean.sh $(BUILDDIR)
+	./clean.sh

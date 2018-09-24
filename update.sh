@@ -1,160 +1,160 @@
 #!/bin/bash
 
+arg=$1
 set -e
 
-vers=6.8.275.14
-tools_vers=79d42dfb11746abb523643428926f2e745834d90
-base_vers=dd710bbda006f340bb04e7131dc07eff556b1d24
-gn_vers=90cda8e01c9f63c077fa2a9997380dbff3ed5203
+vers=6.9.427.27
+gn_vers=091169beda92aff21ded3e9dfb392ea12b10c0e0
 
-if [ "$1" = "--help" ]; then
-    echo 'Usage: update.sh [--fetch]'
+if [ "$arg" = "--help" ]; then
+    echo 'Usage: update.sh [--fetch|--sync]'
     exit
 fi
-
 if [ ! -x update.sh ]; then
     echo 'Run me from the v8-linux directory' 1>&2
     exit 1
 fi
 
-if [ "$1" = "--fetch" ]; then
+if [ "$arg" = "--fetch" ]; then
     rm -rf scratch
     mkdir scratch
     pushd scratch
 
+    # gn
+    git clone https://gn.googlesource.com/gn
+
     # v8
-    mkdir v8-tmp
-    cd v8-tmp
+    mkdir v8-root
+    cd v8-root
     fetch v8
-    cd v8
+
+    popd
+    arg="--sync"
+fi
+if [ "$arg" = "--sync" ]; then
+    pushd scratch
+
+    # gn
+    (cd gn; git checkout $gn_vers)
+
+    # v8
+    cd v8-root/v8
     git checkout $vers
     gclient sync
     cd ../..
-    mv v8-tmp/v8 .
-
-    # depot_tools
-    if [ -z "$tools_vers" ]; then
-        git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
-        tools_vers=HEAD
-    else
-        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-    fi
-    mkdir -p v8/depot_tools
-    (cd depot_tools; git archive "$tools_vers") | tar xf - -C v8/depot_tools
-
-    # chromium_base
-    if [ -z "$base_vers" ]; then
-        git clone --depth=1 https://chromium.googlesource.com/chromium/src/base
-        base_vers=HEAD
-    else
-        git clone https://chromium.googlesource.com/chromium/src/base
-    fi
-    mkdir -p v8/base
-    (cd base; git archive "$base_vers") | tar xf - -C v8/base
-
-    # gn
-    if [ -z "$gn_vers" ]; then
-        git clone --depth=1 https://chromium.googlesource.com/chromium/src/tools/gn
-        gn_vers=HEAD
-    else
-        git clone https://chromium.googlesource.com/chromium/src/tools/gn
-    fi
-    mkdir -p v8/gn
-    (cd gn; git archive "$gn_vers") | tar xf - -C v8/gn
+    mv v8-root/v8 .
 
     popd
 fi
 
-rm -rf v8
-cp -r scratch/v8 .
+echo Removing old copy
+rm -rf v8 gn
+echo Copying pristine source
+cp -r scratch/v8 scratch/gn .
+
+# Generate last_commit_position.h for gn
+echo Generating gn/last_commit_position.h
+pushd gn
+desc=$(git describe HEAD --match initial-commit)
+echo "#define LAST_COMMIT_POSITION \"$desc\"" >tools/gn/last_commit_position.h
+popd
 
 # Exclusions
-pushd v8
+echo Processing exclusions
 # Remove .gitignore files
-find . -type f -name .gitignore -delete
+find gn v8 -type f -name .gitignore -delete
 # Remove .git folders
-find . -type d -name .git -print -prune | xargs rm -rf
+find gn v8 -type d -name .git -print -prune | xargs rm -r
 # Remove *all* binary files
-find . -type f -size +0c -print0 | perl -n0 -e 'chomp($a = $_); print if -B $a' | xargs -0 rm
+find gn v8 -type f -size +0c -print0 | perl -n0 -e 'chomp; print "$_\0" if -B' | xargs -0 rm
 # Remove checksums
-find . -type f -name \*.sha1 -delete
+find gn v8 -type f -name \*.sha1 -delete
 
-rm -rf base/android
-rm -rf base/ios
-rm -rf base/mac
-rm -rf base/win
+pushd gn
+find . -name \*_unittest.cc -delete
+rm -r util/test
+rm -r tools/gn/format_test_data
+rm build/full_test.py
+rm -r infra
+rm -r docs
+popd
 
-rm -rf depot_tools/man
-rm -f depot_tools/ninja*
-rm -rf depot_tools/recipes
-rm -rf depot_tools/testing_support
-rm -rf depot_tools/tests
-rm -rf depot_tools/third_party
-rm -rf depot_tools/win_toolchain
-rm -rf depot_tools/zsh-goodies
+pushd v8
+rm -r build/config/chromecast
+rm -r build/chromeos
+rm -r build/config/chromeos
+rm -r build/config/aix
+rm -r build/toolchain/aix
+rm -r build/android
+rm -r build/toolchain/android
+rm -r build/fuchsia
+rm -r build/config/fuchsia
+rm -r build/toolchain/fuchsia
+rm -r build/config/nacl
+rm -r build/toolchain/nacl
+rm -r build/linux
+rm -r buildtools/third_party
+rm -r buildtools/clang_format
+rm -r buildtools/checkdeps
 
-rm -rf gn/format_test_data
+pushd build/secondary/third_party
+for i in *; do
+    if [ $i != catapult ]; then rm -r $i; fi
+done
+popd
 
-rm -rf build/android
-rm -rf build/fuschia
-rm -rf build/linux
-rm -rf build/mac
-rm -rf build/win
-rm -rf buildtools/third_party/libc++/trunk/test
+rm -r infra
+rm -r ChangeLog
 
 # No tests except torque file
 pushd test
 for i in *; do
-    if [ "$i" != torque ]; then rm -rf "$i"; fi
+    if [ $i != torque ]; then rm -r $i; fi
 done
 popd
 
 # ICU source only
 pushd third_party/icu
 for i in *; do
-    if [ "$i" != source -a -d "$i" ]; then rm -rf "$i"; fi
+    if [ $i != source -a -d $i ]; then rm -r $i; fi
 done
 cd source
 for i in *; do
-    if [ "$i" != i18n -a "$i" != common ]; then rm -rf "$i"; fi
+    if [ $i != i18n -a $i != common ]; then rm -r $i; fi
 done
 cd common
 for i in *; do
-    if [ "$i" != unicode ]; then rm -rf "$i"; fi
+    if [ $i != unicode ]; then rm -r $i; fi
 done
 cd ../i18n
 for i in *; do
-    if [ "$i" != unicode ]; then rm -rf "$i"; fi
+    if [ $i != unicode ]; then rm -r $i; fi
 done
 popd
 
-rm -rf third_party/binutils
-rm -rf third_party/depot_tools
-rm -rf third_party/dmg_fp
-rm -rf third_party/dynamic_annotations
-rm -rf third_party/instrumented_libraries
-rm -rf third_party/libevent
-rm -rf third_party/llvm-build
-rm -rf third_party/nspr
-rm -rf third_party/superfasthash
-rm -rf third_party/symbolize
-rm -rf third_party/valgrind
-rm -rf third_party/xdg_mime
-rm -rf third_party/xdg_user_dirs
+pushd third_party
+for i in *; do
+    if [ $i = icu ]; then continue; fi
+    if [ $i = antlr4 ]; then continue; fi
+    if [ $i = googletest ]; then continue; fi
+    if [ $i = inspector_protocol ]; then continue; fi
+    rm -rf $i
+done
+popd
 
-rm -rf tools/clang
-rm -rf tools/luci-go
-rm -rf tools/profviz
-rm -rf tools/swarming_client
-rm -rf tools/gyp/test
+pushd tools
+for i in *; do
+    if [ $i = generate_shim_headers ]; then continue; fi
+    if [ $i = testrunner ]; then continue; fi
+    if [ -d $i ]; then rm -r $i; fi
+done
+popd
 
-rm -rf benchmarks
+rm -r benchmarks
 
 popd
 
-git add v8
+git add gn v8
 git commit -m "Upstream $vers with exclusions
 
-tools: $tools_vers
-base:  $base_vers
-gn:    $gn_vers" -- v8
+gn: $gn_vers" -- gn v8

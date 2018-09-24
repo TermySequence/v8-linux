@@ -3,10 +3,8 @@ scratch/
 *.a
 *.o
 
-v8/out/
+gn/out/
 v8/out.gn/
-v8/buildtools/linux64/
-v8/tools/gn/
 *.pyc
 
 *~

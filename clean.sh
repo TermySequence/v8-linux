@@ -1,14 +1,16 @@
 #!/bin/bash
 
-# Arguments: builddir
+v8arch=${ARCH:-x64}
+builddir=${BUILDDIR:-out.gn/$v8arch.release}
 
 set -ex
-cd v8
 
-if [ -d "$1" ]; then rm -rf "$1"; fi
-
-rm -rf tools/gn
-rm -rf buildtools/linux64
-rm -rf out out.gn
-
+pushd v8
+rm -rf $builddir
+rm -rf out.gn
 find . -name \*.pyc -delete
+popd
+
+pushd gn
+rm -rf out
+popd
