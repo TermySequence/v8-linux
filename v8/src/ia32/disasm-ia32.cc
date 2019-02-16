@@ -605,6 +605,7 @@ int DisassemblerIA32::F7Instruction(byte* data) {
       break;
     default:
       UnimplementedInstruction();
+      mnem = "(null)";
   }
   AppendToBuffer("%s ", mnem);
   int count = PrintRightOperand(data);

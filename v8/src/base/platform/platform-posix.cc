@@ -745,7 +745,7 @@ static void* ThreadEntry(void* arg) {
 
 
 void Thread::set_name(const char* name) {
-  strncpy(name_, name, sizeof(name_));
+  strncpy(name_, name, sizeof(name_) - 1);
   name_[sizeof(name_) - 1] = '\0';
 }
 
